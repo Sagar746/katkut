@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "katkut-app",
+    "slug": "katkut-ai",
+    "scheme": "katkut",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.katkut.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d4cac464-cc14-4ed0-a986-1ba1373208bc"
+      }
+    },
+    "owner": "sanjayabhattarai",
+    "plugins": [
+      "expo-web-browser"
+    ]
+  }
+}

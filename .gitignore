@@ -1,0 +1,7 @@
+# IDE / local tool config (not part of the product)
+.idea/
+.qodo/
+
+# internal planning docs - not for the public repo
+doc/
+CLAUDE.md
