@@ -6,6 +6,9 @@ import { Edl } from '../core';
 export interface EdlPlayerHandle {
   /** load segment i; play or pause at its in-point */
   seekToIndex: (index: number, opts?: { play?: boolean }) => void;
+  /** seek to an exact position in the whole edited timeline (seconds), paused — used by the
+   * clip-strip's scrub head so the played frame always matches whatever sits under the line */
+  scrubTo: (globalSec: number) => void;
   play: () => void;
   pause: () => void;
   togglePlay: () => void;
@@ -64,23 +67,27 @@ const EdlPlayer = forwardRef<EdlPlayerHandle, EdlPlayerProps>(function EdlPlayer
   }, []);
 
   const load = useCallback(
-    async (i: number, play: boolean) => {
+    async (i: number, play: boolean, atTime?: number) => {
+      // drop overlapping calls (e.g. a fast scrub firing faster than the player can
+      // switch clips) rather than racing two replaceAsync calls against each other
+      if (loadingRef.current) return;
       const timeline = edlRef.current.timeline;
       const seg = timeline[i];
       if (!seg) return;
       const uri = uriByClipId.get(seg.clipId);
       if (!uri) return;
+      const seekTime = atTime ?? seg.in;
       indexRef.current = i;
       cbRef.current.onActiveIndexChange?.(i);
 
-      // Same source already loaded (e.g. trimming the clip currently shown): just
-      // re-seek. Re-loading the identical URI via replaceAsync can hang the Android
-      // decoder — leaving loadingRef stuck true — which freezes the preview and
-      // makes play() do nothing. So never replaceAsync when the URI is unchanged.
+      // Same source already loaded (e.g. trimming the clip currently shown, or scrubbing
+      // within it): just re-seek. Re-loading the identical URI via replaceAsync can hang
+      // the Android decoder — leaving loadingRef stuck true — which freezes the preview
+      // and makes play() do nothing. So never replaceAsync when the URI is unchanged.
       if (loadedUriRef.current === uri) {
         player.muted = seg.muted;
-        player.currentTime = seg.in;
-        reportProgress(i, seg.in);
+        player.currentTime = seekTime;
+        reportProgress(i, seekTime);
         if (play) player.play();
         else player.pause();
         return;
@@ -92,8 +99,8 @@ const EdlPlayer = forwardRef<EdlPlayerHandle, EdlPlayerProps>(function EdlPlayer
         await player.replaceAsync({ uri });
         loadedUriRef.current = uri;
         player.muted = seg.muted;
-        player.currentTime = seg.in;
-        reportProgress(i, seg.in);
+        player.currentTime = seekTime;
+        reportProgress(i, seekTime);
         if (play) player.play();
         else player.pause();
       } catch {
@@ -105,15 +112,34 @@ const EdlPlayer = forwardRef<EdlPlayerHandle, EdlPlayerProps>(function EdlPlayer
     [player, uriByClipId, reportProgress],
   );
 
+  // map a global timeline second to (segment index, position within it) — the scrub head
+  const scrubTo = useCallback(
+    (globalSec: number) => {
+      const timeline = edlRef.current.timeline;
+      let acc = 0;
+      for (let i = 0; i < timeline.length; i++) {
+        const len = Math.max(0, timeline[i].out - timeline[i].in);
+        if (globalSec < acc + len || i === timeline.length - 1) {
+          const atTime = timeline[i].in + Math.max(0, Math.min(len, globalSec - acc));
+          load(i, false, atTime);
+          return;
+        }
+        acc += len;
+      }
+    },
+    [load],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
       seekToIndex: (i, opts) => load(i, !!opts?.play),
+      scrubTo,
       play: () => player.play(),
       pause: () => player.pause(),
       togglePlay: () => (player.playing ? player.pause() : player.play()),
     }),
-    [load, player],
+    [load, scrubTo, player],
   );
 
   // start playback from the top on mount

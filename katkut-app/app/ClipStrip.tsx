@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import { Edl } from '../core';
 
@@ -29,6 +29,13 @@ export interface ClipStripProps {
   onReorder: (from: number, to: number) => void;
   /** pick more clips to append to the timeline (+ button at the strip end) */
   onAddMedia: () => void;
+  /** elapsed seconds across the whole edited timeline — the strip scrolls so this position
+   * always sits exactly under the fixed center line (playing, paused, or after a tap-seek) */
+  playbackSec: number;
+  /** user is dragging the strip itself to scrub; sec is the exact time now under the line */
+  onScrub: (sec: number) => void;
+  /** fired once when a manual scrub drag begins, so the parent can pause playback first */
+  onScrubStart?: () => void;
 }
 
 type TrimDraft = { index: number; in: number; out: number };
@@ -46,6 +53,9 @@ export default function ClipStrip({
   onTrim,
   onReorder,
   onAddMedia,
+  playbackSec,
+  onScrub,
+  onScrubStart,
 }: ClipStripProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const scrollRef = useRef<any>(null);
@@ -53,21 +63,16 @@ export default function ClipStrip({
   const pendingRef = useRef<TrimDraft | null>(null);
   const [drag, setDragState] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  // native-driven offset for the dragged block — updated every gesture frame without
+  // a React re-render; only the *target slot* (drag.target) triggers a re-render.
+  const dragX = useRef(new Animated.Value(0)).current;
   const centersRef = useRef<number[]>([]);
   const [stripWidth, setStripWidth] = useState(0);
   const [zoom, setZoom] = useState(1);
   const zoomStartRef = useRef(1);
-
-  // keep the active clip centered in the strip (the strip scrolls under it, like a
-  // fixed playhead). skip while the user is mid-trim/drag so we don't fight them.
-  useEffect(() => {
-    if (stripWidth <= 0) return;
-    if (drag || trimDraft) return;
-    const center = centersRef.current[selectedIndex];
-    if (center == null) return;
-    scrollRef.current?.scrollTo({ x: Math.max(0, center - stripWidth / 2), animated: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIndex, stripWidth, timeline.length]);
+  // true while the user is actively dragging/flinging the strip itself to scrub —
+  // suppresses the playbackSec-tracking effect so it doesn't fight the user's finger
+  const userScrubbingRef = useRef(false);
 
   function applyDraft(d: TrimDraft) {
     pendingRef.current = d;
@@ -82,6 +87,16 @@ export default function ClipStrip({
   function setDrag(d: DragState | null) {
     dragRef.current = d;
     setDragState(d);
+  }
+  // re-render only when the highlighted drop slot actually changes; the live tx offset
+  // is carried by dragX (native driver) so per-pixel movement never touches React state.
+  function setDragTarget(from: number, target: number) {
+    const prev = dragRef.current;
+    const next = { from, tx: 0, target };
+    dragRef.current = next;
+    if (!prev || prev.from !== from || prev.target !== target) {
+      setDragState(next);
+    }
   }
   function targetForDrag(from: number, tx: number): number {
     const centers = centersRef.current;
@@ -103,20 +118,78 @@ export default function ClipStrip({
   // pinch-to-zoom scales the time-to-pixels factor (wider = finer trimming)
   const pxPerSec = PX_PER_SEC * zoom;
 
-  // layout: compute each clip's width + center (content coords) for reorder hit-testing
+  // layout: compute each clip's width/left-edge/length (content coords) — used for
+  // reorder hit-testing and for the time<->pixel mapping that drives the scrub head
   const widths: number[] = [];
   const centers: number[] = [];
+  const leftEdges: number[] = [];
+  const lens: number[] = [];
   let cursor = padStart;
   timeline.forEach((t, i) => {
     const draft = trimDraft && trimDraft.index === i ? trimDraft : null;
     const inPt = draft ? draft.in : t.in;
     const outPt = draft ? draft.out : t.out;
-    const w = Math.max(40, (outPt - inPt) * pxPerSec);
+    const lenSec = Math.max(0, outPt - inPt);
+    const w = Math.max(40, lenSec * pxPerSec);
     widths[i] = w;
+    lens[i] = lenSec;
+    leftEdges[i] = cursor;
     centers[i] = cursor + w / 2;
     cursor += w + GAP;
   });
   centersRef.current = centers;
+
+  // global elapsed-seconds -> pixel position under the line (and back). Drives both the
+  // continuous follow-during-playback effect and the manual drag-to-scrub handler below.
+  function pixelForTime(t: number): number {
+    let elapsed = 0;
+    for (let i = 0; i < lens.length; i++) {
+      const len = lens[i];
+      if (t <= elapsed + len || i === lens.length - 1) {
+        const within = len > 0 ? Math.min(1, Math.max(0, (t - elapsed) / len)) : 0;
+        return leftEdges[i] + within * widths[i];
+      }
+      elapsed += len;
+    }
+    return padStart;
+  }
+  function timeAtPixel(px: number): number {
+    let elapsed = 0;
+    for (let i = 0; i < widths.length; i++) {
+      const left = leftEdges[i];
+      const w = widths[i];
+      if (px < left + w || i === widths.length - 1) {
+        const within = w > 0 ? Math.min(1, Math.max(0, (px - left) / w)) : 0;
+        return elapsed + within * lens[i];
+      }
+      elapsed += lens[i];
+    }
+    return elapsed;
+  }
+
+  // the line is the scrub head: keep whatever time is "now" exactly under it. Skip while
+  // the user is mid-drag/trim/scrub so this doesn't fight their finger.
+  useEffect(() => {
+    if (stripWidth <= 0) return;
+    if (drag || trimDraft || userScrubbingRef.current) return;
+    const px = pixelForTime(playbackSec);
+    scrollRef.current?.scrollTo({ x: Math.max(0, px - stripWidth / 2), animated: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbackSec, stripWidth, timeline.length, zoom]);
+
+  function handleScrubBegin() {
+    userScrubbingRef.current = true;
+    onScrubStart?.();
+  }
+  function handleScrubEnd() {
+    userScrubbingRef.current = false;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function handleStripScroll(e: any) {
+    if (!userScrubbingRef.current) return;
+    const centerPx = e.nativeEvent.contentOffset.x + stripWidth / 2;
+    onScrub(timeAtPixel(centerPx));
+  }
 
   // right edge of each block in clips-row coords, for the white pill separators
   const rightEdges: number[] = [];
@@ -150,6 +223,12 @@ export default function ClipStrip({
           horizontal
           contentContainerStyle={{ paddingHorizontal: padStart }}
           showsHorizontalScrollIndicator={false}
+          onScrollBeginDrag={handleScrubBegin}
+          onMomentumScrollBegin={handleScrubBegin}
+          onScrollEndDrag={handleScrubEnd}
+          onMomentumScrollEnd={handleScrubEnd}
+          onScroll={handleStripScroll}
+          scrollEventThrottle={32}
         >
           <View>
             {/* time ruler — ticks every 5s, labelled every 10s */}
@@ -170,27 +249,41 @@ export default function ClipStrip({
                 const reorderPan = Gesture.Pan()
                   .activateAfterLongPress(LONG_PRESS_MS)
                   .blocksExternalGesture(scrollRef)
-                  .onStart(() => setDrag({ from: i, tx: 0, target: i }))
-                  .onUpdate((e) => setDrag({ from: i, tx: e.translationX, target: targetForDrag(i, e.translationX) }))
+                  .onStart(() => {
+                    dragX.setValue(0);
+                    setDrag({ from: i, tx: 0, target: i });
+                  })
+                  .onUpdate((e) => {
+                    dragX.setValue(e.translationX);
+                    setDragTarget(i, targetForDrag(i, e.translationX));
+                  })
                   .onEnd(() => {
                     const ds = dragRef.current;
                     setDrag(null);
+                    dragX.setValue(0);
                     if (ds && ds.from !== ds.target) onReorder(ds.from, ds.target);
                   })
-                  .onFinalize(() => setDrag(null));
+                  .onFinalize(() => {
+                    setDrag(null);
+                    dragX.setValue(0);
+                  });
 
                 return (
                   <GestureDetector key={`${t.clipId}-${i}`} gesture={reorderPan}>
-                    <Pressable
-                      onPress={() => onSelect(i)}
+                    <Animated.View
                       style={[
                         styles.block,
                         { width: widths[i] },
                         selected && styles.blockSelected,
                         isTarget && styles.blockTarget,
-                        isDragged && { transform: [{ translateX: drag.tx }], zIndex: 10, opacity: 0.85 },
+                        isDragged && {
+                          transform: [{ translateX: dragX }],
+                          zIndex: 10,
+                          opacity: 0.85,
+                        },
                       ]}
                     >
+                    <Pressable onPress={() => onSelect(i)} style={styles.blockInner}>
                       {thumbs[t.clipId] ? (
                         <Image source={{ uri: thumbs[t.clipId] }} style={styles.thumb} />
                       ) : (
@@ -237,6 +330,7 @@ export default function ClipStrip({
                         </>
                       )}
                     </Pressable>
+                    </Animated.View>
                   </GestureDetector>
                 );
               })}
@@ -354,6 +448,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     backgroundColor: '#000',
   },
+  blockInner: { flex: 1 },
   blockSelected: { borderColor: '#3478f6' },
   blockTarget: { borderColor: '#7fb0ff', borderStyle: 'dashed' },
   thumb: { width: '100%', height: '100%' },

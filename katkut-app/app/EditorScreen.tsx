@@ -223,6 +223,9 @@ export default function EditorScreen({ analyses, initialEdl, onBack }: EditorScr
           onTrim={handleTrim}
           onReorder={handleReorder}
           onAddMedia={handleAddMedia}
+          playbackSec={progress.cur}
+          onScrub={(sec) => playerRef.current?.scrubTo(sec)}
+          onScrubStart={() => playerRef.current?.pause()}
         />
       </View>
 
