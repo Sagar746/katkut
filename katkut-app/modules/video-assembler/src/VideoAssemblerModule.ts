@@ -9,12 +9,15 @@ export interface AssembleSegment {
 
 export type AssembleAudioMode = 'smart' | 'on' | 'off';
 
+export type ExportResolution = '1080p' | '720p';
+
 declare class VideoAssemblerModule extends NativeModule<{}> {
   /** Trim+concat segments → one 1080x1920 MP4 at outputPath (local filesystem path). */
   assemble(
     segments: AssembleSegment[],
     outputPath: string,
     audioMode: AssembleAudioMode,
+    resolution: ExportResolution,
   ): Promise<{ outputPath: string }>;
 
   /**

@@ -1,89 +1,289 @@
-import { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, StyleSheet, Text, View, Dimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ChefHat, ChevronLeft, Plane, Sparkles, Utensils, LucideIcon } from 'lucide-react-native';
 import { VIBE_CHOICES } from '../core';
+import { colors, space, type } from './theme';
+
+const { width } = Dimensions.get('window');
+const TILE_WIDTH = (width - space.md * 2 - space.md) / 2; // Clean 2-column dynamic layout
 
 export interface VibeSheetProps {
   onChoose: (vibeId: string) => void;
   onCancel: () => void;
 }
 
-const EMOJI: Record<string, string> = {
-  auto: '✨',
-  food_vlog: '🍱',
-  travel_vlog: '✈️',
-  cooking: '🍳',
+const ICON: Record<string, LucideIcon> = {
+  auto: Sparkles,
+  food_vlog: Utensils,
+  travel_vlog: Plane,
+  cooking: ChefHat,
 };
 
-const SUBTITLE: Record<string, string> = {
-  auto: 'Smart default',
-  food_vlog: 'Appetizing close-ups',
-  travel_vlog: 'Scenic & lively',
-  cooking: 'Steady, step-by-step',
+const HELPER: Record<string, string> = {
+  auto: 'Let KatKut AI choose your perfect pacing.',
+  food_vlog: 'Punchy fast cuts with intense close-ups.',
+  travel_vlog: 'Cinematic wide shots & smooth panning.',
+  cooking: 'Step-by-step clarity, steady pacing.',
 };
 
+// ================= PREMIUM INTERACTIVE TILE COMPONENT =================
+interface LocalTileProps {
+  id: string;
+  label: string;
+  helper: string;
+  icon: LucideIcon;
+  isSelected: boolean;
+  onPress: () => void;
+}
+
+function PremiumVibeTile({ id, label, helper, icon: IconComponent, isSelected, onPress }: LocalTileProps) {
+  const isAuto = id === 'auto';
+  
+  return (
+    <Pressable 
+      onPress={onPress}
+      style={[
+        styles.tileRoot,
+        isAuto && styles.autoTileBg,
+        isSelected && styles.selectedTileBorder,
+        isSelected && isAuto && styles.selectedAutoBorder
+      ]}
+    >
+      {/* Top Meta Indicator Row */}
+      <View style={styles.tileHeader}>
+        <View style={[
+          styles.iconContainer, 
+          isAuto ? styles.iconContainerAi : styles.iconContainerNormal,
+          isSelected && styles.iconContainerSelected
+        ]}>
+          <IconComponent size={20} color={isAuto || isSelected ? '#0A84FF' : '#A2A2B5'} />
+        </View>
+
+        {isAuto && (
+          <View style={styles.aiBadge}>
+            <Text style={styles.aiBadgeText}>RECOMMENDED</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Text Copy Section */}
+      <View style={styles.tileTextContent}>
+        <Text style={[styles.tileLabel, isSelected && styles.tileTextActive]}>{label}</Text>
+        <Text style={styles.tileHelper}>{helper}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+// ================= MAIN RENDER SHEET CONTAINER =================
 export default function VibeSheet({ onChoose, onCancel }: VibeSheetProps) {
-  const slide = useRef(new Animated.Value(0)).current;
+  const insets = useSafeAreaInsets();
+  const [selectedVibe, setSelectedVibe] = useState<string | null>('auto'); // Defaults to AI selection
 
-  useEffect(() => {
-    Animated.timing(slide, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-  }, [slide]);
-
-  const translateY = slide.interpolate({ inputRange: [0, 1], outputRange: [400, 0] });
+  const handleConfirmSelection = () => {
+    if (selectedVibe) {
+      onChoose(selectedVibe);
+    }
+  };
 
   return (
-    <View style={styles.root}>
-      <Pressable style={styles.scrim} onPress={onCancel} />
-      <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
-        <View style={styles.grabber} />
-        <Text style={styles.title}>What type of video is this?</Text>
+    <View style={[styles.root, { paddingTop: insets.top + space.sm, paddingBottom: insets.bottom + space.md }]}>
+      
+      {/* Top Layout Header Nav */}
+      <View style={styles.headerRow}>
+        <Pressable hitSlop={12} onPress={onCancel} style={styles.backButton}>
+          <ChevronLeft size={24} color="#FFF" />
+        </Pressable>
+        <Text style={styles.headerContext}>STEP 2 OF 3</Text>
+        <View style={{ width: 40 }} /> {/* Layout balancer widget */}
+      </View>
+
+      {/* Screen Primary Branding Headline */}
+      <View style={styles.headlineGroup}>
+        <Text style={styles.title}>What are you making?</Text>
+        <Text style={styles.sub}>This configures the heuristic video engine parameters to match your specific style footprint.</Text>
+      </View>
+
+      {/* Core Grid Matrix Selection Layer */}
+      <View style={styles.grid}>
         {VIBE_CHOICES.map((v) => (
-          <Pressable key={v.id} style={styles.option} onPress={() => onChoose(v.id)}>
-            <Text style={styles.optEmoji}>{EMOJI[v.id] ?? '🎞️'}</Text>
-            <View style={styles.optText}>
-              <Text style={styles.optLabel}>{v.label}</Text>
-              <Text style={styles.optSub}>{SUBTITLE[v.id] ?? ''}</Text>
-            </View>
-            <Text style={styles.optChevron}>›</Text>
-          </Pressable>
+          <PremiumVibeTile
+            key={v.id}
+            id={v.id}
+            label={v.label}
+            helper={HELPER[v.id] ?? ''}
+            icon={ICON[v.id] ?? Sparkles}
+            isSelected={selectedVibe === v.id}
+            onPress={() => setSelectedVibe(v.id)}
+          />
         ))}
-      </Animated.View>
+      </View>
+
+      {/* Floating Action Confirmation Strip */}
+      <View style={styles.footerContainer}>
+        <Pressable 
+          style={[styles.primaryActionBtn, !selectedVibe && styles.disabledBtn]} 
+          disabled={!selectedVibe}
+          onPress={handleConfirmSelection}
+        >
+          <Text style={styles.primaryActionText}>Generate Rough-Cut Timeline</Text>
+        </Pressable>
+      </View>
+
     </View>
   );
 }
 
+// ================= SCHEMATIC DARK MODE STYLING =================
 const styles = StyleSheet.create({
-  root: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'flex-end' },
-  scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)' },
-  sheet: {
-    backgroundColor: '#161616',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 34,
-    gap: 8,
+  root: { 
+    flex: 1, 
+    backgroundColor: '#0F0F11', // Richer off-black canvas depth
+    paddingHorizontal: space.md 
   },
-  grabber: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#444',
-    alignSelf: 'center',
-    marginBottom: 8,
-  },
-  title: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 6 },
-  option: {
+  headerRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#222',
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    gap: 14,
+    marginBottom: space.md,
   },
-  optEmoji: { fontSize: 24 },
-  optText: { flex: 1 },
-  optLabel: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  optSub: { color: '#888', fontSize: 12, marginTop: 2 },
-  optChevron: { color: '#666', fontSize: 22 },
+  backButton: { 
+    width: 40, 
+    height: 40, 
+    borderRadius: 20,
+    backgroundColor: '#1C1C1E',
+    alignItems: 'center', 
+    justifyContent: 'center' 
+  },
+  headerContext: {
+    color: '#636366',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+  },
+  headlineGroup: {
+    marginBottom: space.xl,
+  },
+  title: { 
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#FFFFFF', 
+    letterSpacing: -0.5,
+  },
+  sub: { 
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#8E8E93', 
+    marginTop: space.xs 
+  },
+  grid: { 
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    justifyContent: 'space-between',
+    gap: space.md 
+  },
+  
+  /* Individual Tile Architectures */
+  tileRoot: {
+    width: TILE_WIDTH,
+    height: 165,
+    borderRadius: 16,
+    backgroundColor: '#161618',
+    borderWidth: 1.5,
+    borderColor: '#242426',
+    padding: space.md,
+    justifyContent: 'space-between',
+  },
+  autoTileBg: {
+    backgroundColor: 'rgba(10, 132, 255, 0.04)', // Elegant hint of AI tinting
+    borderColor: 'rgba(10, 132, 255, 0.15)',
+  },
+  selectedTileBorder: {
+    borderColor: '#FFFFFF',
+    backgroundColor: '#1C1C1E',
+  },
+  selectedAutoBorder: {
+    borderColor: '#0A84FF',
+    backgroundColor: 'rgba(10, 132, 255, 0.08)',
+  },
+  tileHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  iconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconContainerNormal: {
+    backgroundColor: '#242426',
+  },
+  iconContainerAi: {
+    backgroundColor: 'rgba(10, 132, 255, 0.15)',
+  },
+  iconContainerSelected: {
+    backgroundColor: '#0A84FF',
+  },
+  aiBadge: {
+    backgroundColor: '#0A84FF',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  aiBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  tileTextContent: {
+    marginTop: space.sm,
+  },
+  tileLabel: {
+    color: '#E5E5EA',
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  tileTextActive: {
+    color: '#FFFFFF',
+  },
+  tileHelper: {
+    color: '#636366',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  
+  /* Footer CTA Layout Styles */
+  footerContainer: {
+    position: 'absolute',
+    bottom: space.xl,
+    left: space.md,
+    right: space.md,
+  },
+  primaryActionBtn: {
+    backgroundColor: '#FFFFFF',
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 6,
+  },
+  disabledBtn: {
+    backgroundColor: '#242426',
+    opacity: 0.5,
+  },
+  primaryActionText: {
+    color: '#0F0F11',
+    fontSize: 15,
+    fontWeight: '700',
+  },
 });

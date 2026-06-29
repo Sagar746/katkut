@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Image, StyleSheet, View } from 'react-native';
+import { colors } from './theme';
 
 export interface SplashScreenProps {
   /** called after the brand beat (~1.5s); parent then shows Home */
@@ -7,44 +8,32 @@ export interface SplashScreenProps {
 }
 
 export default function SplashScreen({ onDone }: SplashScreenProps) {
-  const pulse = useRef(new Animated.Value(0.6)).current;
+  const fade = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(16)).current;
 
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 750, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.6, duration: 750, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
+    Animated.parallel([
+      Animated.timing(fade, { toValue: 1, duration: 420, useNativeDriver: true }),
+      Animated.spring(rise, { toValue: 0, friction: 7, tension: 60, useNativeDriver: true }),
+    ]).start();
     const t = setTimeout(onDone, 1500);
-    return () => {
-      loop.stop();
-      clearTimeout(t);
-    };
-  }, [onDone, pulse]);
-
-  const scale = pulse.interpolate({ inputRange: [0.6, 1], outputRange: [0.96, 1.04] });
+    return () => clearTimeout(t);
+  }, [onDone, fade, rise]);
 
   return (
     <View style={styles.root}>
-      <Animated.View style={{ opacity: pulse, transform: [{ scale }] }}>
-        <Text style={styles.logo}>KatKut</Text>
-        <Text style={styles.tag}>AI</Text>
+      <Animated.View style={{ opacity: fade, transform: [{ translateY: rise }] }}>
+        <Image
+          source={require('../assets/katkutai_logo.png')}
+          style={styles.logo}
+          resizeMode="contain"
+        />
       </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
-  logo: { color: '#fff', fontSize: 44, fontWeight: '800', letterSpacing: 1, textAlign: 'center' },
-  tag: {
-    color: '#3478f6',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: 6,
-    textAlign: 'center',
-    marginTop: 4,
-  },
+  root: { flex: 1, backgroundColor: colors.bg.base, alignItems: 'center', justifyContent: 'center' },
+  logo: { width: 240, height: 192 },
 });

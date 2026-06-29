@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import SplashScreen from './app/SplashScreen';
@@ -31,29 +32,37 @@ export default function App() {
   const [proxies, setProxies] = useState<Map<string, string>>(new Map());
   // the project being edited (new or reopened) — used for draft auto-save + library promotion
   const [projectId, setProjectId] = useState<string>('');
+  // true from the moment "New Project" is tapped through the picker closing + mapping —
+  // covers the otherwise-blank gap before the Vibe sheet appears
+  const [pickingClips, setPickingClips] = useState(false);
 
   // New Project → open the system picker directly (it requests permission on first use).
   async function startNewProject() {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['videos'],
-      allowsMultipleSelection: true,
-      selectionLimit: 0,
-      quality: 1,
-    });
-    if (result.canceled || result.assets.length === 0) return;
+    setPickingClips(true);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['videos'],
+        allowsMultipleSelection: true,
+        selectionLimit: 0,
+        quality: 1,
+      });
+      if (result.canceled || result.assets.length === 0) return;
 
-    const picked: PickedClip[] = result.assets.map((a, i) => ({
-      clipId: clipIdForIndex(i),
-      uri: a.uri,
-      fileName: a.fileName ?? null,
-      durationMs: a.duration ?? null,
-      width: a.width ?? null,
-      height: a.height ?? null,
-    }));
-    setClips(picked);
-    setAnalyses([]);
-    setEdl(null);
-    setScreen('vibe');
+      const picked: PickedClip[] = result.assets.map((a, i) => ({
+        clipId: clipIdForIndex(i),
+        uri: a.uri,
+        fileName: a.fileName ?? null,
+        durationMs: a.duration ?? null,
+        width: a.width ?? null,
+        height: a.height ?? null,
+      }));
+      setClips(picked);
+      setAnalyses([]);
+      setEdl(null);
+      setScreen('vibe');
+    } finally {
+      setPickingClips(false);
+    }
   }
 
   function handleVibe(chosen: string) {
@@ -102,7 +111,8 @@ export default function App() {
   }
 
   return (
-    <GestureHandlerRootView style={styles.root}>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={styles.root}>
       {screen === 'splash' && <SplashScreen onDone={() => setScreen('home')} />}
 
       {screen === 'home' && (
@@ -110,6 +120,7 @@ export default function App() {
           onNewProject={startNewProject}
           onOpenDraft={openDraft}
           onOpenExport={openDraft}
+          loading={pickingClips}
         />
       )}
 
@@ -128,6 +139,7 @@ export default function App() {
           proxyByClipId={proxies}
           onEdit={() => setScreen('editor')}
           onExport={() => setScreen('export')}
+          onRegenerate={() => setScreen('vibe')}
           onClose={() => exitToHome(edl)}
         />
       )}
@@ -160,7 +172,8 @@ export default function App() {
       )}
 
       <StatusBar style="light" />
-    </GestureHandlerRootView>
+      </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
 

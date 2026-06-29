@@ -24,15 +24,26 @@ data class Segment(
  */
 class Transcoder(private val context: Context) {
 
-  fun assemble(segments: List<Segment>, outputPath: String, audioMode: String) {
+  // Output dimensions/bitrate — default 1080x1920 (HARD RULE 2); "720p" is the fast-export option.
+  private var outW = 1080
+  private var outH = 1920
+  private var bitrate = 10_000_000
+
+  fun assemble(segments: List<Segment>, outputPath: String, audioMode: String, resolution: String) {
     if (segments.isEmpty()) throw IllegalArgumentException("No segments to assemble")
+
+    if (resolution == "720p") {
+      outW = 720; outH = 1280; bitrate = 5_000_000
+    } else {
+      outW = 1080; outH = 1920; bitrate = 10_000_000
+    }
 
     // Build the audio track first so its format is known before muxer.start().
     val encodedAudio = buildAudio(segments, audioMode)
 
-    val encoderFormat = MediaFormat.createVideoFormat(MIME, OUT_W, OUT_H).apply {
+    val encoderFormat = MediaFormat.createVideoFormat(MIME, outW, outH).apply {
       setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-      setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+      setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
       setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
       setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL)
     }
@@ -105,7 +116,7 @@ class Transcoder(private val context: Context) {
 
     // source displayed aspect for cover crop
     val srcAspect = displayedAspect(parsed)
-    renderer.setCoverCrop(srcAspect, OUT_W.toDouble() / OUT_H.toDouble())
+    renderer.setCoverCrop(srcAspect, outW.toDouble() / outH.toDouble())
 
     val extractor = MediaExtractor()
     var decoder: MediaCodec? = null
@@ -170,7 +181,7 @@ class Transcoder(private val context: Context) {
               if (firstPts < 0) firstPts = pts
               val outUsTimeline = timelineStartUs + (pts - firstPts)
               renderer.awaitNewImage()
-              renderer.drawFrame(OUT_W, OUT_H)
+              renderer.drawFrame(outW, outH)
               renderer.setPresentationTime(outUsTimeline * 1000)
               renderer.swapBuffers()
               lastOutUs = outUsTimeline
@@ -227,11 +238,11 @@ class Transcoder(private val context: Context) {
     val retriever = MediaMetadataRetriever()
     try {
       retriever.setDataSource(context, uri)
-      val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: OUT_W
-      val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: OUT_H
+      val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: outW
+      val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: outH
       val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
       val (dw, dh) = if (rot == 90 || rot == 270) Pair(h, w) else Pair(w, h)
-      return if (dh != 0) dw.toDouble() / dh.toDouble() else OUT_W.toDouble() / OUT_H.toDouble()
+      return if (dh != 0) dw.toDouble() / dh.toDouble() else outW.toDouble() / outH.toDouble()
     } finally {
       retriever.release()
     }
@@ -246,9 +257,6 @@ class Transcoder(private val context: Context) {
 
   companion object {
     private const val MIME = "video/avc"
-    private const val OUT_W = 1080
-    private const val OUT_H = 1920
-    private const val BITRATE = 10_000_000
     private const val FPS = 30
     private const val IFRAME_INTERVAL = 1
   }

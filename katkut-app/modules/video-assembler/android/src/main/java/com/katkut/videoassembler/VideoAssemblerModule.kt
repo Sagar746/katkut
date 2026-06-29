@@ -22,13 +22,13 @@ class VideoAssemblerModule : Module() {
 
     // Trim+concat segments → one 1080x1920 MP4 at outputPath (a local filesystem path).
     // audioMode: "smart" (per-clip muted flags) | "on" (all audio) | "off" (silent).
-    AsyncFunction("assemble") { segments: List<SegmentRecord>, outputPath: String, audioMode: String ->
+    AsyncFunction("assemble") { segments: List<SegmentRecord>, outputPath: String, audioMode: String, resolution: String ->
       val context = appContext.reactContext
         ?: throw VideoAssemblerException("No React context available")
       val path = outputPath.removePrefix("file://")
       val segs = segments.map { Segment(it.uri, it.inSec, it.outSec, it.muted) }
       try {
-        Transcoder(context).assemble(segs, path, audioMode)
+        Transcoder(context).assemble(segs, path, audioMode, resolution)
       } catch (e: Exception) {
         throw VideoAssemblerException("Assemble failed: ${e.message}", e)
       }

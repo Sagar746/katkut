@@ -1,40 +1,40 @@
-import { useEffect, useRef, useState } from 'react';
-import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { Animated, Image, Pressable, StyleSheet, Text, View, Dimensions } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
+import { Plus, Trash2, Volume2, VolumeX } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
 import { Edl } from '../core';
 
-export const PX_PER_SEC = 26;
-export const STRIP_HEIGHT = 72;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+function triggerTick() {
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+}
+
+export const PX_PER_SEC = 32; // Slightly denser baseline spacing matrix
+export const STRIP_HEIGHT = 68;
 const MIN_LEN_SEC = 0.5;
-const GAP = 4;
-const PADDING = 12;
-const LONG_PRESS_MS = 300;
-const ZOOM_MIN = 0.4;
-const ZOOM_MAX = 4;
-const RULER_H = 18;
-const ADD_BTN_W = 44;
+const GAP = 2; // Tighter professional gaps
+const LONG_PRESS_MS = 250;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3.5;
+const RULER_H = 20;
+const ADD_BTN_W = 52;
 
 export interface ClipStripProps {
   timeline: Edl['timeline'];
   selectedIndex: number;
   thumbs: Record<string, string>;
   durationByClipId: Map<string, number>;
-  /** show trim handles + delete on the selected clip (only when paused) */
   handlesEnabled: boolean;
   onSelect: (index: number) => void;
   onToggleMute: (index: number) => void;
   onDelete: (index: number) => void;
   onTrim: (index: number, newIn: number, newOut: number) => void;
-  /** committed on drag release (long-press + drag to reorder) */
   onReorder: (from: number, to: number) => void;
-  /** pick more clips to append to the timeline (+ button at the strip end) */
   onAddMedia: () => void;
-  /** elapsed seconds across the whole edited timeline — the strip scrolls so this position
-   * always sits exactly under the fixed center line (playing, paused, or after a tap-seek) */
   playbackSec: number;
-  /** user is dragging the strip itself to scrub; sec is the exact time now under the line */
   onScrub: (sec: number) => void;
-  /** fired once when a manual scrub drag begins, so the parent can pause playback first */
   onScrubStart?: () => void;
 }
 
@@ -57,39 +57,38 @@ export default function ClipStrip({
   onScrub,
   onScrubStart,
 }: ClipStripProps) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scrollRef = useRef<any>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const [trimDraft, setTrimDraft] = useState<TrimDraft | null>(null);
   const pendingRef = useRef<TrimDraft | null>(null);
   const [drag, setDragState] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
-  // native-driven offset for the dragged block — updated every gesture frame without
-  // a React re-render; only the *target slot* (drag.target) triggers a re-render.
+  
   const dragX = useRef(new Animated.Value(0)).current;
-  const centersRef = useRef<number[]>([]);
-  const [stripWidth, setStripWidth] = useState(0);
+  const [stripWidth, setStripWidth] = useState(SCREEN_WIDTH);
   const [zoom, setZoom] = useState(1);
   const zoomStartRef = useRef(1);
-  // true while the user is actively dragging/flinging the strip itself to scrub —
-  // suppresses the playbackSec-tracking effect so it doesn't fight the user's finger
   const userScrubbingRef = useRef(false);
 
   function applyDraft(d: TrimDraft) {
     pendingRef.current = d;
     setTrimDraft(d);
   }
+
   function endTrim(index: number) {
     const p = pendingRef.current;
     pendingRef.current = null;
     setTrimDraft(null);
-    if (p && p.index === index) onTrim(index, p.in, p.out);
+    if (p && p.index === index) {
+      triggerTick();
+      onTrim(index, p.in, p.out);
+    }
   }
+
   function setDrag(d: DragState | null) {
     dragRef.current = d;
     setDragState(d);
   }
-  // re-render only when the highlighted drop slot actually changes; the live tx offset
-  // is carried by dragX (native driver) so per-pixel movement never touches React state.
+
   function setDragTarget(from: number, target: number) {
     const prev = dragRef.current;
     const next = { from, tx: 0, target };
@@ -98,8 +97,37 @@ export default function ClipStrip({
       setDragState(next);
     }
   }
+
+  const pxPerSec = PX_PER_SEC * zoom;
+  const padStart = stripWidth / 2;
+
+  // Memoize timeline spatial layout geometry metrics to maximize gesture performance
+  const layoutData = useMemo(() => {
+    const widths: number[] = [];
+    const centers: number[] = [];
+    const leftEdges: number[] = [];
+    const lens: number[] = [];
+    let cursor = padStart;
+
+    timeline.forEach((item, i) => {
+      const draft = trimDraft && trimDraft.index === i ? trimDraft : null;
+      const inPt = draft ? draft.in : item.in;
+      const outPt = draft ? draft.out : item.out;
+      const lenSec = Math.max(0, outPt - inPt);
+      const w = Math.max(48, lenSec * pxPerSec);
+      
+      widths[i] = w;
+      lens[i] = lenSec;
+      leftEdges[i] = cursor;
+      centers[i] = cursor + w / 2;
+      cursor += w + GAP;
+    });
+
+    return { widths, centers, leftEdges, lens, totalWidth: cursor };
+  }, [timeline, trimDraft, pxPerSec, padStart]);
+
   function targetForDrag(from: number, tx: number): number {
-    const centers = centersRef.current;
+    const { centers } = layoutData;
     const draggedCenter = (centers[from] ?? 0) + tx;
     let best = from;
     let bestDist = Infinity;
@@ -113,35 +141,8 @@ export default function ClipStrip({
     return best;
   }
 
-  // half-viewport leading/trailing pad so the first/last clip can sit in the center
-  const padStart = stripWidth > 0 ? stripWidth / 2 : PADDING;
-  // pinch-to-zoom scales the time-to-pixels factor (wider = finer trimming)
-  const pxPerSec = PX_PER_SEC * zoom;
-
-  // layout: compute each clip's width/left-edge/length (content coords) — used for
-  // reorder hit-testing and for the time<->pixel mapping that drives the scrub head
-  const widths: number[] = [];
-  const centers: number[] = [];
-  const leftEdges: number[] = [];
-  const lens: number[] = [];
-  let cursor = padStart;
-  timeline.forEach((t, i) => {
-    const draft = trimDraft && trimDraft.index === i ? trimDraft : null;
-    const inPt = draft ? draft.in : t.in;
-    const outPt = draft ? draft.out : t.out;
-    const lenSec = Math.max(0, outPt - inPt);
-    const w = Math.max(40, lenSec * pxPerSec);
-    widths[i] = w;
-    lens[i] = lenSec;
-    leftEdges[i] = cursor;
-    centers[i] = cursor + w / 2;
-    cursor += w + GAP;
-  });
-  centersRef.current = centers;
-
-  // global elapsed-seconds -> pixel position under the line (and back). Drives both the
-  // continuous follow-during-playback effect and the manual drag-to-scrub handler below.
   function pixelForTime(t: number): number {
+    const { lens, leftEdges, widths } = layoutData;
     let elapsed = 0;
     for (let i = 0; i < lens.length; i++) {
       const len = lens[i];
@@ -153,7 +154,9 @@ export default function ClipStrip({
     }
     return padStart;
   }
+
   function timeAtPixel(px: number): number {
+    const { widths, leftEdges, lens } = layoutData;
     let elapsed = 0;
     for (let i = 0; i < widths.length; i++) {
       const left = leftEdges[i];
@@ -167,57 +170,51 @@ export default function ClipStrip({
     return elapsed;
   }
 
-  // the line is the scrub head: keep whatever time is "now" exactly under it. Skip while
-  // the user is mid-drag/trim/scrub so this doesn't fight their finger.
+  // Follow player position head tracking
   useEffect(() => {
-    if (stripWidth <= 0) return;
     if (drag || trimDraft || userScrubbingRef.current) return;
     const px = pixelForTime(playbackSec);
     scrollRef.current?.scrollTo({ x: Math.max(0, px - stripWidth / 2), animated: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playbackSec, stripWidth, timeline.length, zoom]);
+  }, [playbackSec, stripWidth, layoutData]);
 
   function handleScrubBegin() {
     userScrubbingRef.current = true;
     onScrubStart?.();
   }
+
   function handleScrubEnd() {
     userScrubbingRef.current = false;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   function handleStripScroll(e: any) {
     if (!userScrubbingRef.current) return;
     const centerPx = e.nativeEvent.contentOffset.x + stripWidth / 2;
     onScrub(timeAtPixel(centerPx));
   }
 
-  // right edge of each block in clips-row coords, for the white pill separators
-  const rightEdges: number[] = [];
-  let acc = 0;
-  for (let i = 0; i < widths.length; i++) {
-    acc += widths[i];
-    rightEdges[i] = acc + i * GAP;
-  }
+  // Continuous Ruler ticks creation
+  const rulerTicks = useMemo(() => {
+    const totalSec = timeline.reduce((s, t) => s + Math.max(0, t.out - t.in), 0);
+    const generated: number[] = [];
+    for (let s = 0; s <= Math.ceil(totalSec); s += 5) generated.push(s);
+    return generated;
+  }, [timeline]);
 
-  // time-ruler ticks (every 5s, labelled every 10s) across the edited duration
-  const totalSec = timeline.reduce((s, t) => s + Math.max(0, t.out - t.in), 0);
-  const ticks: number[] = [];
-  for (let s = 0; s <= Math.ceil(totalSec); s += 5) ticks.push(s);
-
-  const pinch = Gesture.Pinch()
+  // Discrete configuration for pinch gesture to isolate scrolling boundaries
+  const pinchGesture = Gesture.Pinch()
+    // callbacks call JS state/Animated (not worklets) → run them on the JS thread
+    .runOnJS(true)
     .onStart(() => {
       zoomStartRef.current = zoom;
     })
     .onUpdate((e) => {
-      setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoomStartRef.current * e.scale)));
+      const calculatedZoom = zoomStartRef.current * e.scale;
+      setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, calculatedZoom)));
     });
 
   return (
-    <View
-      style={styles.stripContainer}
-      onLayout={(e) => setStripWidth(e.nativeEvent.layout.width)}
-    >
-      <GestureDetector gesture={pinch}>
+    <View style={styles.stripContainer} onLayout={(e) => setStripWidth(e.nativeEvent.layout.width)}>
+      <GestureDetector gesture={pinchGesture}>
         <ScrollView
           ref={scrollRef}
           horizontal
@@ -228,30 +225,32 @@ export default function ClipStrip({
           onScrollEndDrag={handleScrubEnd}
           onMomentumScrollEnd={handleScrubEnd}
           onScroll={handleStripScroll}
-          scrollEventThrottle={32}
+          scrollEventThrottle={16}
+          style={styles.scrollCanvas}
         >
-          <View>
-            {/* time ruler — ticks every 5s, labelled every 10s */}
-            {ticks.map((s) => (
+          <View style={{ width: layoutData.totalWidth - padStart + ADD_BTN_W + 40 }}>
+            {/* Fine Time Ruler Overlay */}
+            {rulerTicks.map((s) => (
               <View key={`tick-${s}`} pointerEvents="none" style={[styles.tick, { left: s * pxPerSec }]}>
-                <View style={styles.tickMark} />
+                <View style={s % 10 === 0 ? styles.tickMarkMajor : styles.tickMarkMinor} />
                 {s % 10 === 0 && <Text style={styles.tickLabel}>{s}s</Text>}
               </View>
             ))}
 
             <View style={styles.clipsRow}>
-              {timeline.map((t, i) => {
+              {timeline.map((item, i) => {
                 const selected = i === selectedIndex;
-                const sourceDur = durationByClipId.get(t.clipId) ?? t.out;
+                const sourceDur = durationByClipId.get(item.clipId) ?? item.out;
                 const isDragged = drag?.from === i;
                 const isTarget = drag != null && drag.target === i && drag.from !== i;
 
                 const reorderPan = Gesture.Pan()
+                  .runOnJS(true)
                   .activateAfterLongPress(LONG_PRESS_MS)
-                  .blocksExternalGesture(scrollRef)
                   .onStart(() => {
                     dragX.setValue(0);
                     setDrag({ from: i, tx: 0, target: i });
+                    triggerTick();
                   })
                   .onUpdate((e) => {
                     dragX.setValue(e.translationX);
@@ -261,7 +260,10 @@ export default function ClipStrip({
                     const ds = dragRef.current;
                     setDrag(null);
                     dragX.setValue(0);
-                    if (ds && ds.from !== ds.target) onReorder(ds.from, ds.target);
+                    if (ds && ds.from !== ds.target) {
+                      triggerTick();
+                      onReorder(ds.from, ds.target);
+                    }
                   })
                   .onFinalize(() => {
                     setDrag(null);
@@ -269,100 +271,102 @@ export default function ClipStrip({
                   });
 
                 return (
-                  <GestureDetector key={`${t.clipId}-${i}`} gesture={reorderPan}>
+                  <GestureDetector key={`${item.clipId}-${i}`} gesture={reorderPan}>
                     <Animated.View
                       style={[
                         styles.block,
-                        { width: widths[i] },
+                        { width: layoutData.widths[i] },
                         selected && styles.blockSelected,
                         isTarget && styles.blockTarget,
                         isDragged && {
                           transform: [{ translateX: dragX }],
-                          zIndex: 10,
-                          opacity: 0.85,
+                          zIndex: 50,
+                          opacity: 0.75,
+                          shadowColor: '#000',
+                          shadowRadius: 10,
+                          shadowOpacity: 0.5,
                         },
                       ]}
                     >
-                    <Pressable onPress={() => onSelect(i)} style={styles.blockInner}>
-                      {thumbs[t.clipId] ? (
-                        <Image source={{ uri: thumbs[t.clipId] }} style={styles.thumb} />
-                      ) : (
-                        <View style={[styles.thumb, styles.placeholder]} />
-                      )}
+                      <Pressable
+                        onPress={() => {
+                          triggerTick();
+                          onSelect(i);
+                        }}
+                        style={styles.blockInner}
+                      >
+                        {thumbs[item.clipId] ? (
+                          <Image source={{ uri: thumbs[item.clipId] }} style={styles.thumb} />
+                        ) : (
+                          <View style={styles.placeholder} />
+                        )}
 
-                      <Pressable hitSlop={8} onPress={() => onToggleMute(i)} style={styles.muteBtn}>
-                        <Text style={styles.muteIcon}>{t.muted ? '🔇' : '🔊'}</Text>
-                      </Pressable>
-
-                      {selected && handlesEnabled && (
-                        <>
-                          <Pressable hitSlop={8} onPress={() => onDelete(i)} style={styles.deleteBtn}>
-                            <Text style={styles.deleteIcon}>🗑️</Text>
+                        {/* Top Utility Controllers */}
+                        <View style={styles.controlPillStrip}>
+                          <Pressable hitSlop={6} onPress={() => onToggleMute(i)} style={styles.glassUtilityChip}>
+                            {item.muted ? <VolumeX size={11} color="#FF453A" /> : <Volume2 size={11} color="#FFF" />}
                           </Pressable>
 
-                          <TrimHandle
-                            side="left"
-                            scrollRef={scrollRef}
-                            pxPerSec={pxPerSec}
-                            origIn={t.in}
-                            origOut={t.out}
-                            onChange={(deltaSec, origIn, origOut) => {
-                              const newIn = Math.min(Math.max(origIn + deltaSec, 0), origOut - MIN_LEN_SEC);
-                              applyDraft({ index: i, in: newIn, out: origOut });
-                            }}
-                            onEnd={() => endTrim(i)}
-                          />
-                          <TrimHandle
-                            side="right"
-                            scrollRef={scrollRef}
-                            pxPerSec={pxPerSec}
-                            origIn={t.in}
-                            origOut={t.out}
-                            onChange={(deltaSec, origIn, origOut) => {
-                              const newOut = Math.min(
-                                Math.max(origOut + deltaSec, origIn + MIN_LEN_SEC),
-                                sourceDur,
-                              );
-                              applyDraft({ index: i, in: origIn, out: newOut });
-                            }}
-                            onEnd={() => endTrim(i)}
-                          />
-                        </>
-                      )}
-                    </Pressable>
+                          {selected && handlesEnabled && (
+                            <Pressable hitSlop={6} onPress={() => onDelete(i)} style={[styles.glassUtilityChip, styles.deleteBg]}>
+                              <Trash2 size={11} color="#FFF" />
+                            </Pressable>
+                          )}
+                        </View>
+
+                        {/* CapCut-Style Ear Trim Handles */}
+                        {selected && handlesEnabled && (
+                          <>
+                            <TrimHandle
+                              side="left"
+                              pxPerSec={pxPerSec}
+                              origIn={item.in}
+                              origOut={item.out}
+                              onChange={(deltaSec, origIn, origOut) => {
+                                const newIn = Math.min(Math.max(origIn + deltaSec, 0), origOut - MIN_LEN_SEC);
+                                applyDraft({ index: i, in: newIn, out: origOut });
+                              }}
+                              onEnd={() => endTrim(i)}
+                            />
+                            <TrimHandle
+                              side="right"
+                              pxPerSec={pxPerSec}
+                              origIn={item.in}
+                              origOut={item.out}
+                              onChange={(deltaSec, origIn, origOut) => {
+                                const newOut = Math.min(
+                                  Math.max(origOut + deltaSec, origIn + MIN_LEN_SEC),
+                                  sourceDur,
+                                );
+                                applyDraft({ index: i, in: origIn, out: newOut });
+                              }}
+                              onEnd={() => endTrim(i)}
+                            />
+                          </>
+                        )}
+                      </Pressable>
                     </Animated.View>
                   </GestureDetector>
                 );
               })}
 
-              {/* white pill separators between clips */}
-              {timeline.slice(0, -1).map((_, i) => (
-                <View
-                  key={`sep-${i}`}
-                  pointerEvents="none"
-                  style={[styles.pill, { left: rightEdges[i] + GAP / 2 - 1 }]}
-                />
-              ))}
-
-              {/* + Add media — pick more clips, appended at the end */}
-              <Pressable onPress={onAddMedia} style={styles.addBtn}>
-                <Text style={styles.addIcon}>+</Text>
+              {/* Enhanced Interactive Append Trigger */}
+              <Pressable onPress={onAddMedia} style={styles.addMediaBlock}>
+                <Plus size={20} color="#FFFFFF" strokeWidth={2.5} />
               </Pressable>
             </View>
           </View>
         </ScrollView>
       </GestureDetector>
 
-      {/* fixed center playhead — the strip scrolls under it */}
-      <View pointerEvents="none" style={styles.playhead} />
+      {/* Hero Central Needle Playhead */}
+      <View pointerEvents="none" style={styles.needlePlayhead} />
     </View>
   );
 }
 
 interface TrimHandleProps {
   side: 'left' | 'right';
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  scrollRef: React.RefObject<any>;
   pxPerSec: number;
   origIn: number;
   origOut: number;
@@ -370,10 +374,10 @@ interface TrimHandleProps {
   onEnd: () => void;
 }
 
-function TrimHandle({ side, scrollRef, pxPerSec, origIn, origOut, onChange, onEnd }: TrimHandleProps) {
+function TrimHandle({ side, pxPerSec, origIn, origOut, onChange, onEnd }: TrimHandleProps) {
   const orig = useRef({ in: origIn, out: origOut });
   const pan = Gesture.Pan()
-    .blocksExternalGesture(scrollRef)
+    .runOnJS(true)
     .onBegin(() => {
       orig.current = { in: origIn, out: origOut };
     })
@@ -385,102 +389,122 @@ function TrimHandle({ side, scrollRef, pxPerSec, origIn, origOut, onChange, onEn
 
   return (
     <GestureDetector gesture={pan}>
-      <View style={[styles.handle, side === 'left' ? styles.handleLeft : styles.handleRight]}>
-        <View style={styles.handleGrip} />
+      <View style={[styles.handleEar, side === 'left' ? styles.earLeft : styles.earRight]}>
+        <View style={styles.earGripPill} />
       </View>
     </GestureDetector>
   );
 }
 
+// ================= PREMIUM WORKSPACE STYLING CONFIG =================
 const styles = StyleSheet.create({
   stripContainer: {
-    backgroundColor: '#111',
-    paddingVertical: 8,
+    backgroundColor: '#121214', // Deep cinematic neutral backdrop
+    paddingVertical: 12,
     justifyContent: 'center',
+  },
+  scrollCanvas: {
+    overflow: 'visible',
   },
   tick: {
     position: 'absolute',
-    top: 0,
+    top: 2,
     alignItems: 'center',
   },
-  tickMark: { width: 1, height: 6, backgroundColor: '#555', marginBottom: 2 },
-  tickLabel: { color: '#888', fontSize: 9, fontVariant: ['tabular-nums'] },
+  tickMarkMajor: { width: 1.5, height: 8, backgroundColor: '#48484A' },
+  tickMarkMinor: { width: 1, height: 4, backgroundColor: '#2C2C2E' },
+  tickLabel: { color: '#8E8E93', fontSize: 9, fontWeight: '600', marginTop: 2, fontVariant: ['tabular-nums'] },
   clipsRow: {
     marginTop: RULER_H,
     flexDirection: 'row',
     gap: GAP,
     alignItems: 'center',
+    paddingVertical: 4,
   },
-  pill: {
-    position: 'absolute',
-    top: 6,
-    bottom: 6,
-    width: 2,
-    borderRadius: 1,
-    backgroundColor: '#fff',
-  },
-  addBtn: {
+  addMediaBlock: {
     width: ADD_BTN_W,
     height: STRIP_HEIGHT,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#555',
-    backgroundColor: '#1c1c1c',
+    borderRadius: 12,
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1.5,
+    borderColor: '#2C2C2E',
     alignItems: 'center',
     justifyContent: 'center',
+    marginLeft: 6,
   },
-  addIcon: { color: '#fff', fontSize: 26, lineHeight: 28 },
-  playhead: {
+  needlePlayhead: {
     position: 'absolute',
     left: '50%',
     marginLeft: -1,
     top: 0,
     bottom: 0,
     width: 2,
-    backgroundColor: '#fff',
-    zIndex: 5,
+    backgroundColor: '#FFD60A', // Distinct yellow precision marker line
+    zIndex: 100,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 3,
   },
   block: {
     height: STRIP_HEIGHT,
-    borderRadius: 6,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'transparent',
+    borderRadius: 8,
+    overflow: 'visible', // Visible handle elements
     backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: '#1C1C1E',
   },
-  blockInner: { flex: 1 },
-  blockSelected: { borderColor: '#3478f6' },
-  blockTarget: { borderColor: '#7fb0ff', borderStyle: 'dashed' },
-  thumb: { width: '100%', height: '100%' },
-  placeholder: { backgroundColor: '#ccc' },
-  muteBtn: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    borderRadius: 10,
-    paddingHorizontal: 3,
+  blockInner: { flex: 1, overflow: 'hidden', borderRadius: 6 },
+  blockSelected: { 
+    borderColor: '#FFD60A', // Premium neon outline accents
+    borderWidth: 2,
   },
-  muteIcon: { fontSize: 13 },
-  deleteBtn: {
+  blockTarget: { borderColor: '#0A84FF', borderStyle: 'dashed', borderWidth: 2 },
+  thumb: { width: '100%', height: '100%', resizeMode: 'cover' },
+  placeholder: { flex: 1, backgroundColor: '#2C2C2E' },
+  
+  /* Floating Glassmorphic Widgets */
+  controlPillStrip: {
     position: 'absolute',
-    top: 2,
-    right: 2,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    borderRadius: 10,
-    paddingHorizontal: 3,
+    top: 4,
+    left: 4,
+    right: 4,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    pointerEvents: 'box-none',
   },
-  deleteIcon: { fontSize: 13 },
-  handle: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 18,
-    backgroundColor: 'rgba(52,120,246,0.85)',
+  glassUtilityChip: {
+    backgroundColor: 'rgba(30, 30, 32, 0.75)',
+    borderRadius: 6,
+    width: 20,
+    height: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  handleLeft: { left: 0, borderTopLeftRadius: 4, borderBottomLeftRadius: 4 },
-  handleRight: { right: 0, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
-  handleGrip: { width: 3, height: 24, borderRadius: 2, backgroundColor: '#fff' },
+  deleteBg: {
+    backgroundColor: 'rgba(255, 69, 58, 0.85)',
+  },
+
+  /* Solid Pro Handle Architectures */
+  handleEar: {
+    position: 'absolute',
+    top: -2,
+    bottom: -2,
+    width: 14,
+    backgroundColor: '#FFD60A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 60,
+  },
+  earLeft: { 
+    left: -12, 
+    borderTopLeftRadius: 6, 
+    borderBottomLeftRadius: 6 
+  },
+  earRight: { 
+    right: -12, 
+    borderTopRightRadius: 6, 
+    borderBottomRightRadius: 6 
+  },
+  earGripPill: { width: 2, height: 16, borderRadius: 1, backgroundColor: '#121214' },
 });
