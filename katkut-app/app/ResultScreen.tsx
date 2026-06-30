@@ -39,7 +39,7 @@ function GhostAction({
   );
 }
 
-/** Spec §6.5 — preview the generated reel (video fills the screen) and choose what's next. */
+/** Spec §6.5 — preview the rough cut in a 9:16 frame, then choose what's next. */
 export default function ResultScreen({
   analyses,
   edl,
@@ -60,21 +60,9 @@ export default function ResultScreen({
   }, [analyses, proxyByClipId]);
 
   return (
-    <View style={styles.root}>
-      <EdlPlayer
-        ref={playerRef}
-        edl={edl}
-        uriByClipId={uriByClipId}
-        fill
-        loop
-        onPlayingChange={setPlaying}
-      />
-
-      {/* tap anywhere on the video to play/pause */}
-      <Pressable style={styles.tapZone} onPress={() => playerRef.current?.togglePlay()} />
-
+    <View style={[styles.root, { paddingTop: insets.top + space.xs, paddingBottom: insets.bottom + space.md }]}>
       {/* top bar */}
-      <View style={[styles.topBar, { paddingTop: insets.top + space.xs }]}>
+      <View style={styles.topBar}>
         <Pressable hitSlop={10} onPress={onClose} style={styles.iconBtn}>
           <X size={24} color={colors.text.primary} />
         </Pressable>
@@ -84,14 +72,31 @@ export default function ResultScreen({
         </Pressable>
       </View>
 
-      {!playing && (
-        <View style={styles.playHint} pointerEvents="none">
-          <Play size={40} color={colors.text.primary} fill={colors.text.primary} />
+      {/* centered 9:16 preview */}
+      <View style={styles.previewWrap}>
+        <View style={styles.preview}>
+          <EdlPlayer
+            ref={playerRef}
+            edl={edl}
+            uriByClipId={uriByClipId}
+            fill
+            loop
+            onPlayingChange={setPlaying}
+          />
+          <Pressable style={styles.tapZone} onPress={() => playerRef.current?.togglePlay()}>
+            <View style={styles.playBadge} pointerEvents="none">
+              {playing ? (
+                <Pause size={26} color="#fff" fill="#fff" />
+              ) : (
+                <Play size={26} color="#fff" fill="#fff" />
+              )}
+            </View>
+          </Pressable>
         </View>
-      )}
+      </View>
 
-      {/* bottom actions */}
-      <View style={[styles.actions, { paddingBottom: insets.bottom + space.md }]}>
+      {/* actions below the preview */}
+      <View style={styles.actions}>
         <Button label="Export" onPress={onExport} />
         <View style={styles.ghostRow}>
           <GhostAction icon={Pencil} label="Edit" onPress={onEdit} />
@@ -108,22 +113,24 @@ export default function ResultScreen({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg.base },
-  tapZone: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+  root: { flex: 1, backgroundColor: colors.bg.base, paddingHorizontal: space.md },
   topBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: space.md,
     paddingBottom: space.sm,
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   title: { ...type.heading, color: colors.text.primary },
-  playHint: {
+  previewWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  preview: {
+    height: '100%',
+    aspectRatio: 9 / 16,
+    borderRadius: radius.lg,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  tapZone: {
     position: 'absolute',
     top: 0,
     left: 0,
@@ -132,16 +139,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  actions: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: space.md,
-    paddingTop: space.lg,
-    gap: space.md,
-    backgroundColor: colors.bg.overlay,
+  playBadge: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  actions: { paddingTop: space.lg, gap: space.md },
   ghostRow: { flexDirection: 'row', justifyContent: 'space-around' },
   ghost: { alignItems: 'center', gap: space.xs, paddingVertical: space.sm, paddingHorizontal: space.md },
   ghostLabel: { ...type.bodySm, color: colors.text.primary },

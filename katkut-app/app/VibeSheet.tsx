@@ -1,289 +1,378 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View, Dimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ChefHat, ChevronLeft, Plane, Sparkles, Utensils, LucideIcon } from 'lucide-react-native';
+import { 
+  Sparkles, 
+  ChevronLeft, 
+  Utensils, 
+  Plane, 
+  ChefHat, 
+  Camera,
+  LucideIcon,
+  Zap,
+  Music,
+  Palette
+} from 'lucide-react-native';
 import { VIBE_CHOICES } from '../core';
-import { colors, space, type } from './theme';
+import { space } from './theme';
 
 const { width } = Dimensions.get('window');
-const TILE_WIDTH = (width - space.md * 2 - space.md) / 2; // Clean 2-column dynamic layout
+const TILE_WIDTH = (width - space.md * 2 - space.sm) / 2;
 
 export interface VibeSheetProps {
   onChoose: (vibeId: string) => void;
   onCancel: () => void;
 }
 
-const ICON: Record<string, LucideIcon> = {
-  auto: Sparkles,
-  food_vlog: Utensils,
-  travel_vlog: Plane,
-  cooking: ChefHat,
+// Enhanced icon and color mapping for visual distinction
+const VIBE_CONFIG: Record<string, {
+  icon: LucideIcon;
+  gradient: string[];
+  accentColor: string;
+  helper: string;
+}> = {
+  auto: {
+    icon: Sparkles,
+    gradient: ['#007AFF', '#5856D6'],
+    accentColor: '#007AFF',
+    helper: 'AI-powered editing optimized for your content',
+  },
+  food_vlog: {
+    icon: Utensils,
+    gradient: ['#FF6B35', '#F7931E'],
+    accentColor: '#FF6B35',
+    helper: 'Fast-paced cuts with mouth-watering close-ups',
+  },
+  travel_vlog: {
+    icon: Plane,
+    gradient: ['#00C6FF', '#0072FF'],
+    accentColor: '#00C6FF',
+    helper: 'Cinematic wide shots with smooth transitions',
+  },
+  cooking: {
+    icon: ChefHat,
+    gradient: ['#FF4B2B', '#FF416C'],
+    accentColor: '#FF4B2B',
+    helper: 'Step-by-step clarity with instructional pacing',
+  },
+  fitness: {
+    icon: Zap,
+    gradient: ['#11998E', '#38EF7D'],
+    accentColor: '#11998E',
+    helper: 'High-energy cuts synced to music beats',
+  },
+  music: {
+    icon: Music,
+    gradient: ['#8E2DE2', '#4A00E0'],
+    accentColor: '#8E2DE2',
+    helper: 'Rhythm-based editing with audio sync',
+  },
+  artistic: {
+    icon: Palette,
+    gradient: ['#F2994A', '#F2C94C'],
+    accentColor: '#F2994A',
+    helper: 'Creative transitions with artistic flair',
+  },
+  vlog: {
+    icon: Camera,
+    gradient: ['#2193B0', '#6DD5ED'],
+    accentColor: '#2193B0',
+    helper: 'Natural flow with engaging storytelling',
+  },
 };
 
-const HELPER: Record<string, string> = {
-  auto: 'Let KatKut AI choose your perfect pacing.',
-  food_vlog: 'Punchy fast cuts with intense close-ups.',
-  travel_vlog: 'Cinematic wide shots & smooth panning.',
-  cooking: 'Step-by-step clarity, steady pacing.',
-};
-
-// ================= PREMIUM INTERACTIVE TILE COMPONENT =================
-interface LocalTileProps {
+interface VibeTileProps {
   id: string;
   label: string;
-  helper: string;
-  icon: LucideIcon;
   isSelected: boolean;
   onPress: () => void;
 }
 
-function PremiumVibeTile({ id, label, helper, icon: IconComponent, isSelected, onPress }: LocalTileProps) {
-  const isAuto = id === 'auto';
+function VibeTile({ id, label, isSelected, onPress }: VibeTileProps) {
+  const config = VIBE_CONFIG[id] || VIBE_CONFIG.auto;
+  const IconComponent = config.icon;
   
   return (
-    <Pressable 
+    <Pressable
       onPress={onPress}
       style={[
-        styles.tileRoot,
-        isAuto && styles.autoTileBg,
-        isSelected && styles.selectedTileBorder,
-        isSelected && isAuto && styles.selectedAutoBorder
+        styles.tile,
+        isSelected && styles.tileSelected,
       ]}
     >
-      {/* Top Meta Indicator Row */}
-      <View style={styles.tileHeader}>
+      {/* Gradient background when selected */}
+      {isSelected && (
         <View style={[
-          styles.iconContainer, 
-          isAuto ? styles.iconContainerAi : styles.iconContainerNormal,
-          isSelected && styles.iconContainerSelected
+          styles.tileGradient,
+          { backgroundColor: config.accentColor + '15' }
+        ]} />
+      )}
+      
+      {/* Top section with icon */}
+      <View style={styles.tileTop}>
+        <View style={[
+          styles.iconWrapper,
+          { backgroundColor: isSelected ? config.accentColor : config.accentColor + '20' }
         ]}>
-          <IconComponent size={20} color={isAuto || isSelected ? '#0A84FF' : '#A2A2B5'} />
+          <IconComponent 
+            size={22} 
+            color={isSelected ? '#FFFFFF' : config.accentColor} 
+            strokeWidth={1.5}
+          />
         </View>
-
-        {isAuto && (
-          <View style={styles.aiBadge}>
-            <Text style={styles.aiBadgeText}>RECOMMENDED</Text>
+        
+        {id === 'auto' && (
+          <View style={styles.recommendedBadge}>
+            <Sparkles size={10} color="#007AFF" />
+            <Text style={styles.recommendedText}>AI</Text>
           </View>
         )}
       </View>
-
-      {/* Text Copy Section */}
-      <View style={styles.tileTextContent}>
-        <Text style={[styles.tileLabel, isSelected && styles.tileTextActive]}>{label}</Text>
-        <Text style={styles.tileHelper}>{helper}</Text>
+      
+      {/* Bottom section with text */}
+      <View style={styles.tileBottom}>
+        <Text style={[
+          styles.tileLabel,
+          { color: isSelected ? config.accentColor : '#FFFFFF' }
+        ]}>
+          {label}
+        </Text>
+        <Text style={styles.tileHelper}>
+          {config.helper}
+        </Text>
       </View>
+      
+      {/* Selection indicator */}
+      {isSelected && (
+        <View style={[styles.selectionDot, { backgroundColor: config.accentColor }]} />
+      )}
     </Pressable>
   );
 }
 
-// ================= MAIN RENDER SHEET CONTAINER =================
 export default function VibeSheet({ onChoose, onCancel }: VibeSheetProps) {
   const insets = useSafeAreaInsets();
-  const [selectedVibe, setSelectedVibe] = useState<string | null>('auto'); // Defaults to AI selection
+  const [selectedVibe, setSelectedVibe] = useState<string>('auto');
 
-  const handleConfirmSelection = () => {
+  const handleConfirm = () => {
     if (selectedVibe) {
       onChoose(selectedVibe);
     }
   };
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + space.sm, paddingBottom: insets.bottom + space.md }]}>
+    <View style={[styles.container, { 
+      paddingTop: insets.top + space.md,
+      paddingBottom: insets.bottom + space.md 
+    }]}>
       
-      {/* Top Layout Header Nav */}
-      <View style={styles.headerRow}>
-        <Pressable hitSlop={12} onPress={onCancel} style={styles.backButton}>
-          <ChevronLeft size={24} color="#FFF" />
+      {/* Header */}
+      <View style={styles.header}>
+        <Pressable onPress={onCancel} style={styles.backButton}>
+          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2} />
         </Pressable>
-        <Text style={styles.headerContext}>STEP 2 OF 3</Text>
-        <View style={{ width: 40 }} /> {/* Layout balancer widget */}
+        
+        <View style={styles.headerCenter}>
+          <Text style={styles.stepIndicator}>2 of 3</Text>
+        </View>
+        
+        <View style={styles.headerSpacer} />
       </View>
 
-      {/* Screen Primary Branding Headline */}
-      <View style={styles.headlineGroup}>
-        <Text style={styles.title}>What are you making?</Text>
-        <Text style={styles.sub}>This configures the heuristic video engine parameters to match your specific style footprint.</Text>
+      {/* Title Section */}
+      <View style={styles.titleSection}>
+        <Text style={styles.title}>Choose your style</Text>
+        <Text style={styles.subtitle}>
+          Select a vibe that matches your content for the perfect edit
+        </Text>
       </View>
 
-      {/* Core Grid Matrix Selection Layer */}
+      {/* Grid of options */}
       <View style={styles.grid}>
-        {VIBE_CHOICES.map((v) => (
-          <PremiumVibeTile
-            key={v.id}
-            id={v.id}
-            label={v.label}
-            helper={HELPER[v.id] ?? ''}
-            icon={ICON[v.id] ?? Sparkles}
-            isSelected={selectedVibe === v.id}
-            onPress={() => setSelectedVibe(v.id)}
+        {VIBE_CHOICES.map((vibe) => (
+          <VibeTile
+            key={vibe.id}
+            id={vibe.id}
+            label={vibe.label}
+            isSelected={selectedVibe === vibe.id}
+            onPress={() => setSelectedVibe(vibe.id)}
           />
         ))}
       </View>
 
-      {/* Floating Action Confirmation Strip */}
-      <View style={styles.footerContainer}>
-        <Pressable 
-          style={[styles.primaryActionBtn, !selectedVibe && styles.disabledBtn]} 
+      {/* Continue Button */}
+      <View style={styles.footer}>
+        <Pressable
+          style={[
+            styles.continueButton,
+            !selectedVibe && styles.continueButtonDisabled
+          ]}
+          onPress={handleConfirm}
           disabled={!selectedVibe}
-          onPress={handleConfirmSelection}
         >
-          <Text style={styles.primaryActionText}>Generate Rough-Cut Timeline</Text>
+          <Text style={styles.continueButtonText}>
+            Continue with {VIBE_CHOICES.find(v => v.id === selectedVibe)?.label || 'Auto'}
+          </Text>
         </Pressable>
       </View>
-
     </View>
   );
 }
 
-// ================= SCHEMATIC DARK MODE STYLING =================
 const styles = StyleSheet.create({
-  root: { 
-    flex: 1, 
-    backgroundColor: '#0F0F11', // Richer off-black canvas depth
-    paddingHorizontal: space.md 
+  container: {
+    flex: 1,
+    backgroundColor: '#000000',
+    paddingHorizontal: space.md,
   },
-  headerRow: {
+  
+  // Header
+  header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: space.md,
+    justifyContent: 'space-between',
+    marginBottom: space.lg,
   },
-  backButton: { 
-    width: 40, 
-    height: 40, 
+  backButton: {
+    width: 40,
+    height: 40,
     borderRadius: 20,
     backgroundColor: '#1C1C1E',
-    alignItems: 'center', 
-    justifyContent: 'center' 
-  },
-  headerContext: {
-    color: '#636366',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-  },
-  headlineGroup: {
-    marginBottom: space.xl,
-  },
-  title: { 
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#FFFFFF', 
-    letterSpacing: -0.5,
-  },
-  sub: { 
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#8E8E93', 
-    marginTop: space.xs 
-  },
-  grid: { 
-    flexDirection: 'row', 
-    flexWrap: 'wrap', 
-    justifyContent: 'space-between',
-    gap: space.md 
-  },
-  
-  /* Individual Tile Architectures */
-  tileRoot: {
-    width: TILE_WIDTH,
-    height: 165,
-    borderRadius: 16,
-    backgroundColor: '#161618',
-    borderWidth: 1.5,
-    borderColor: '#242426',
-    padding: space.md,
-    justifyContent: 'space-between',
-  },
-  autoTileBg: {
-    backgroundColor: 'rgba(10, 132, 255, 0.04)', // Elegant hint of AI tinting
-    borderColor: 'rgba(10, 132, 255, 0.15)',
-  },
-  selectedTileBorder: {
-    borderColor: '#FFFFFF',
-    backgroundColor: '#1C1C1E',
-  },
-  selectedAutoBorder: {
-    borderColor: '#0A84FF',
-    backgroundColor: 'rgba(10, 132, 255, 0.08)',
-  },
-  tileHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  iconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconContainerNormal: {
-    backgroundColor: '#242426',
+  headerCenter: {
+    alignItems: 'center',
   },
-  iconContainerAi: {
-    backgroundColor: 'rgba(10, 132, 255, 0.15)',
-  },
-  iconContainerSelected: {
-    backgroundColor: '#0A84FF',
-  },
-  aiBadge: {
-    backgroundColor: '#0A84FF',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  aiBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 8,
-    fontWeight: '800',
+  stepIndicator: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8E8E93',
     letterSpacing: 0.5,
   },
-  tileTextContent: {
-    marginTop: space.sm,
-  },
-  tileLabel: {
-    color: '#E5E5EA',
-    fontSize: 15,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  tileTextActive: {
-    color: '#FFFFFF',
-  },
-  tileHelper: {
-    color: '#636366',
-    fontSize: 11,
-    lineHeight: 15,
+  headerSpacer: {
+    width: 40,
   },
   
-  /* Footer CTA Layout Styles */
-  footerContainer: {
-    position: 'absolute',
-    bottom: space.xl,
-    left: space.md,
-    right: space.md,
+  // Title
+  titleSection: {
+    marginBottom: space.xl,
   },
-  primaryActionBtn: {
-    backgroundColor: '#FFFFFF',
-    height: 54,
-    borderRadius: 27,
+  title: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 15,
+    color: '#8E8E93',
+    lineHeight: 20,
+  },
+  
+  // Grid
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.sm,
+    flex: 1,
+  },
+  
+  // Tile
+  tile: {
+    width: TILE_WIDTH,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1.5,
+    borderColor: '#2C2C2E',
+    position: 'relative',
+    overflow: 'hidden',
+    height: 160,
+    justifyContent: 'space-between',
+  },
+  tileSelected: {
+    borderColor: 'transparent',
+    backgroundColor: '#1C1C1E',
+  },
+  tileGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 16,
+  },
+  tileTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  iconWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 6,
   },
-  disabledBtn: {
-    backgroundColor: '#242426',
+  recommendedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 122, 255, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  recommendedText: {
+    color: '#007AFF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  tileBottom: {
+    gap: 4,
+  },
+  tileLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: -0.3,
+  },
+  tileHelper: {
+    fontSize: 12,
+    color: '#8E8E93',
+    lineHeight: 16,
+  },
+  selectionDot: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  
+  // Footer
+  footer: {
+    marginTop: 'auto',
+    paddingTop: space.md,
+  },
+  continueButton: {
+    backgroundColor: '#FFFFFF',
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  continueButtonDisabled: {
+    backgroundColor: '#2C2C2E',
     opacity: 0.5,
   },
-  primaryActionText: {
-    color: '#0F0F11',
-    fontSize: 15,
-    fontWeight: '700',
+  continueButtonText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: -0.3,
   },
 });

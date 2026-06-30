@@ -1,16 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Rect } from 'react-native-svg';
-import { Check, Download, Share2 } from 'lucide-react-native';
+import { Check, Share2, ChevronLeft, Film, Download } from 'lucide-react-native';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { exportReel } from './exportReel';
 import { saveToGallery, shareReel } from './share';
 import { AnalysisClip, Edl } from '../core';
 import { ExportResolution } from '../native';
 import { saveDraft, markExported } from '../services';
-import { colors, radius, space, type } from './theme';
-import Button from './components/Button';
+import { space } from './theme';
 import PressableScale from './components/PressableScale';
 
 export interface ExportScreenProps {
@@ -28,17 +27,13 @@ type Phase =
   | { kind: 'done'; outputPath: string }
   | { kind: 'error'; message: string };
 
-// TODO(monetization, Rule 6 "ads later"): swap for a real full-screen ad SDK.
-async function showAdStub(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 800));
-}
-
-const THUMB_W = 220;
+const THUMB_W = 200;
 const THUMB_H = (THUMB_W * 16) / 9;
-const STROKE = 4;
+const STROKE = 2;
 const RECT_W = THUMB_W - STROKE;
 const RECT_H = THUMB_H - STROKE;
-const PERIMETER = 2 * (RECT_W - 2 * radius.lg + RECT_H - 2 * radius.lg) + 2 * Math.PI * radius.lg;
+const CORNER_R = 16;
+const PERIMETER = 2 * (RECT_W - 2 * CORNER_R + RECT_H - 2 * CORNER_R) + 2 * Math.PI * CORNER_R;
 
 export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone, onCancel }: ExportScreenProps) {
   const insets = useSafeAreaInsets();
@@ -49,7 +44,6 @@ export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone,
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const rampRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // first-frame thumbnail for the export card
   useEffect(() => {
     const uri = analyses.find((a) => a.clipId === edl.timeline[0]?.clipId)?.uri;
     if (!uri) return;
@@ -63,28 +57,26 @@ export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone,
   }, []);
 
   async function startExport() {
-    setPhase({ kind: 'running', label: 'Preparing…' });
+    setPhase({ kind: 'running', label: 'Preparing export...' });
     setProg(0);
-    // no real per-frame progress from native — ease the border toward 90%, then complete on resolve
+    
     rampRef.current = setInterval(() => {
-      setProg((p) => (p < 0.9 ? p + (0.9 - p) * 0.05 : p));
-    }, 100);
+      setProg((p) => (p < 0.92 ? p + (0.92 - p) * 0.08 : p));
+    }, 80);
 
     try {
-      await showAdStub();
-      setPhase({ kind: 'running', label: 'Rendering video…' });
+      setPhase({ kind: 'running', label: 'Rendering video...' });
       const { outputPath } = await exportReel(edl, analyses, resolution);
 
-      setPhase({ kind: 'running', label: 'Finalizing…' });
+      setPhase({ kind: 'running', label: 'Saving to gallery...' });
       await saveToGallery(outputPath);
 
       let thumbUri: string | undefined = thumb ?? undefined;
       try {
         const t = await VideoThumbnails.getThumbnailAsync(outputPath, { time: 0 });
         thumbUri = t.uri;
-      } catch {
-        // best-effort
-      }
+      } catch {}
+      
       await saveDraft({ id: projectId, vibeId, edl, analyses, thumbUri });
       await markExported(projectId, outputPath);
 
@@ -107,142 +99,375 @@ export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone,
   }
 
   const isDone = phase.kind === 'done';
-  const borderColor = isDone ? colors.success : colors.accent.default;
+  const isRunning = phase.kind === 'running';
+  const isConfig = phase.kind === 'config';
+  const isError = phase.kind === 'error';
+  
+  const borderColor = isDone ? '#34C759' : '#007AFF';
   const dashoffset = PERIMETER * (1 - prog);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + space.md, paddingBottom: insets.bottom + space.lg }]}>
-      <Text style={styles.title}>
-        {phase.kind === 'config' ? 'Export your reel' : isDone ? 'Exported' : 'Exporting'}
-      </Text>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      
+      {/* Header */}
+      <View style={styles.header}>
+        <PressableScale hitSlop={12} onPress={onCancel} style={styles.backButton}>
+          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2} />
+        </PressableScale>
+        <Text style={styles.headerTitle}>
+          {isRunning ? 'Exporting' : isDone ? 'Complete' : 'Export Video'}
+        </Text>
+        <View style={styles.headerSpacer} />
+      </View>
 
-      {/* thumbnail with the tracing progress border */}
-      <View style={styles.thumbWrap}>
-        {thumb ? (
-          <Image source={{ uri: thumb }} style={styles.thumb} />
-        ) : (
-          <View style={[styles.thumb, styles.thumbPlaceholder]} />
-        )}
-        {phase.kind !== 'config' && (
-          <>
-            <View style={styles.dim} />
-            <Svg width={THUMB_W} height={THUMB_H} style={StyleSheet.absoluteFill}>
-              <Rect
-                x={STROKE / 2}
-                y={STROKE / 2}
-                width={RECT_W}
-                height={RECT_H}
-                rx={radius.lg}
-                fill="none"
-                stroke={borderColor}
-                strokeWidth={STROKE}
-                strokeLinecap="round"
-                strokeDasharray={PERIMETER}
-                strokeDashoffset={dashoffset}
-              />
-            </Svg>
-            <View style={styles.thumbCenter} pointerEvents="none">
-              {isDone ? (
-                <View style={styles.checkCircle}>
-                  <Check size={36} color={colors.success} strokeWidth={3} />
+      {/* Main Content */}
+      <View style={styles.content}>
+        
+        {/* Thumbnail Preview */}
+        <View style={styles.previewContainer}>
+          <View style={styles.thumbnailWrapper}>
+            {thumb ? (
+              <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
+            ) : (
+              <View style={[styles.thumbnail, styles.thumbnailPlaceholder]}>
+                <Film size={36} color="#48484A" strokeWidth={1.5} />
+              </View>
+            )}
+            
+            {!isConfig && (
+              <>
+                <View style={styles.overlay} />
+                <Svg width={THUMB_W} height={THUMB_H} style={StyleSheet.absoluteFill}>
+                  <Rect
+                    x={STROKE / 2}
+                    y={STROKE / 2}
+                    width={RECT_W}
+                    height={RECT_H}
+                    rx={CORNER_R}
+                    fill="none"
+                    stroke={borderColor}
+                    strokeWidth={STROKE}
+                    strokeLinecap="round"
+                    strokeDasharray={PERIMETER}
+                    strokeDashoffset={dashoffset}
+                  />
+                </Svg>
+                <View style={styles.thumbnailOverlay}>
+                  {isDone ? (
+                    <View style={styles.successIcon}>
+                      <Check size={32} color="#FFFFFF" strokeWidth={3} />
+                    </View>
+                  ) : (
+                    <View style={styles.progressContainer}>
+                      <Text style={styles.progressText}>{Math.round(prog * 100)}%</Text>
+                    </View>
+                  )}
                 </View>
-              ) : (
-                <Text style={styles.pct}>{Math.round(prog * 100)}%</Text>
-              )}
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* Status Message */}
+        <View style={styles.statusContainer}>
+          {isConfig && (
+            <Text style={styles.statusDescription}>
+              Choose your preferred quality and export your video
+            </Text>
+          )}
+          {isRunning && (
+            <View style={styles.statusRow}>
+              <ActivityIndicator size="small" color="#007AFF" />
+              <Text style={styles.statusText}>{phase.label}</Text>
             </View>
-          </>
+          )}
+          {isDone && (
+            <View style={styles.statusRow}>
+              <Check size={16} color="#34C759" strokeWidth={3} />
+              <Text style={[styles.statusText, styles.successText]}>Saved to your gallery</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Resolution Selector */}
+        {isConfig && (
+          <View style={styles.resolutionContainer}>
+            <PressableScale
+              style={[styles.resolutionOption, resolution === '720p' && styles.resolutionActive]}
+              onPress={() => setResolution('720p')}
+            >
+              <Text style={[styles.resolutionText, resolution === '720p' && styles.resolutionTextActive]}>
+                HD 720p
+              </Text>
+              <Text style={[styles.resolutionSubtext, resolution === '720p' && styles.resolutionTextActive]}>
+                Good quality, smaller file
+              </Text>
+            </PressableScale>
+            
+            <PressableScale
+              style={[styles.resolutionOption, resolution === '1080p' && styles.resolutionActive]}
+              onPress={() => setResolution('1080p')}
+            >
+              <Text style={[styles.resolutionText, resolution === '1080p' && styles.resolutionTextActive]}>
+                Full HD 1080p
+              </Text>
+              <Text style={[styles.resolutionSubtext, resolution === '1080p' && styles.resolutionTextActive]}>
+                Best quality recommended
+              </Text>
+            </PressableScale>
+          </View>
         )}
       </View>
 
-      {phase.kind === 'running' && <Text style={styles.status}>{phase.label}</Text>}
+      {/* Footer Actions */}
+      <View style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>
+        {isConfig && (
+          <PressableScale style={styles.primaryButton} onPress={startExport}>
+            <Download size={20} color="#000000" strokeWidth={2} />
+            <Text style={styles.primaryButtonText}>Export Video</Text>
+          </PressableScale>
+        )}
 
-      {/* config: resolution chips + start */}
-      {phase.kind === 'config' && (
-        <View style={styles.configBlock}>
-          <View style={styles.chips}>
-            {(['1080p', '720p'] as ExportResolution[]).map((r) => {
-              const active = resolution === r;
-              return (
-                <PressableScale
-                  key={r}
-                  style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => setResolution(r)}
-                >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                    {r}
-                    {r === '720p' ? '  ·  fast' : '  ·  best'}
-                  </Text>
-                </PressableScale>
-              );
-            })}
+        {isDone && (
+          <View style={styles.actionRow}>
+            <PressableScale style={styles.primaryButton} onPress={() => handleShare(phase.outputPath)}>
+              <Share2 size={20} color="#000000" strokeWidth={2} />
+              <Text style={styles.primaryButtonText}>Share Video</Text>
+            </PressableScale>
+            
+            <PressableScale style={styles.secondaryButton} onPress={onDone}>
+              <Text style={styles.secondaryButtonText}>Done</Text>
+            </PressableScale>
+            
+            {saveMsg && <Text style={styles.errorText}>{saveMsg}</Text>}
           </View>
-          <Button label="Export" icon={<Download size={20} color={colors.accent.onAccent} />} onPress={startExport} />
-          <Button label="Back" variant="ghost" onPress={onCancel} />
-        </View>
-      )}
+        )}
 
-      {isDone && (
-        <View style={styles.doneBlock}>
-          <Text style={styles.savedLine}>Saved to your gallery · finish it in TikTok, Instagram or CapCut.</Text>
-          <Button
-            label="Share"
-            icon={<Share2 size={20} color={colors.accent.onAccent} />}
-            onPress={() => handleShare((phase as { outputPath: string }).outputPath)}
-          />
-          <Button label="Done" variant="ghost" onPress={onDone} />
-          {saveMsg && <Text style={styles.errorMsg}>{saveMsg}</Text>}
-        </View>
-      )}
+        {isError && (
+          <View style={styles.actionRow}>
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorTitle}>Export Failed</Text>
+              <Text style={styles.errorMessage}>{phase.message}</Text>
+            </View>
+            <PressableScale style={styles.secondaryButton} onPress={onCancel}>
+              <Text style={styles.secondaryButtonText}>Go Back</Text>
+            </PressableScale>
+          </View>
+        )}
 
-      {phase.kind === 'error' && (
-        <View style={styles.doneBlock}>
-          <Text style={styles.errorMsg}>{phase.message}</Text>
-          <Button label="Back" variant="ghost" onPress={onCancel} />
-        </View>
-      )}
-
-      {phase.kind === 'running' && (
-        <Text style={styles.reassure}>Keep the app open while exporting.</Text>
-      )}
+        {isRunning && (
+          <Text style={styles.keepOpenText}>Please keep the app open during export</Text>
+        )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg.base, alignItems: 'center', paddingHorizontal: space.md, gap: space.lg },
-  title: { ...type.title, color: colors.text.primary, marginTop: space.sm },
-  thumbWrap: { width: THUMB_W, height: THUMB_H, marginTop: space.md },
-  thumb: { width: THUMB_W, height: THUMB_H, borderRadius: radius.lg, backgroundColor: colors.bg.surface },
-  thumbPlaceholder: { backgroundColor: colors.bg.surface },
-  dim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.lg, backgroundColor: 'rgba(0,0,0,0.35)' },
-  thumbCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-  pct: { ...type.display, color: colors.text.primary, fontVariant: ['tabular-nums'] },
-  checkCircle: {
+  container: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#1C1C1E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    letterSpacing: -0.3,
+  },
+  headerSpacer: {
+    width: 40,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: space.lg,
+  },
+  previewContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.lg,
+  },
+  thumbnailWrapper: {
+    width: THUMB_W,
+    height: THUMB_H,
+    borderRadius: CORNER_R,
+    overflow: 'hidden',
+    backgroundColor: '#1C1C1E',
+  },
+  thumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  thumbnailPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1C1C1E',
+  },
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  thumbnailOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressText: {
+    fontSize: 42,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  successIcon: {
     width: 64,
     height: 64,
-    borderRadius: radius.full,
-    backgroundColor: colors.bg.elevated,
+    borderRadius: 32,
+    backgroundColor: '#34C759',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  status: { ...type.body, color: colors.text.secondary },
-  configBlock: { width: '100%', gap: space.sm, marginTop: 'auto' },
-  chips: { flexDirection: 'row', gap: space.sm, marginBottom: space.sm },
-  chip: {
-    flex: 1,
-    height: 44,
-    borderRadius: radius.md,
+  statusContainer: {
+    alignItems: 'center',
+    marginBottom: space.lg,
+    minHeight: 40,
+  },
+  statusDescription: {
+    fontSize: 15,
+    color: '#8E8E93',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusText: {
+    fontSize: 14,
+    color: '#8E8E93',
+    fontWeight: '500',
+  },
+  successText: {
+    color: '#34C759',
+    fontWeight: '600',
+  },
+  resolutionContainer: {
+    gap: 10,
+    marginBottom: space.md,
+  },
+  resolutionOption: {
+    backgroundColor: '#1C1C1E',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: '#2C2C2E',
+  },
+  resolutionActive: {
+    borderColor: '#007AFF',
+    backgroundColor: '#1C1C1E',
+  },
+  resolutionText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  resolutionTextActive: {
+    color: '#007AFF',
+  },
+  resolutionSubtext: {
+    fontSize: 13,
+    color: '#8E8E93',
+  },
+  footer: {
+    paddingHorizontal: space.lg,
+    gap: space.md,
+  },
+  actionRow: {
+    gap: 12,
+  },
+  primaryButton: {
+    backgroundColor: '#FFFFFF',
+    height: 54,
+    borderRadius: 27,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  primaryButtonText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: -0.3,
+  },
+  secondaryButton: {
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1.5,
+    borderColor: '#2C2C2E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  errorContainer: {
+    backgroundColor: 'rgba(255, 59, 48, 0.1)',
+    borderRadius: 14,
+    padding: 16,
     borderWidth: 1,
-    borderColor: colors.border.default,
-    backgroundColor: colors.bg.input,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: 'rgba(255, 59, 48, 0.2)',
   },
-  chipActive: { borderColor: colors.accent.default, backgroundColor: colors.accent.bg },
-  chipText: { ...type.bodySm, color: colors.text.secondary },
-  chipTextActive: { color: colors.accent.default, fontWeight: '700' },
-  doneBlock: { width: '100%', gap: space.sm, marginTop: 'auto' },
-  savedLine: { ...type.bodySm, color: colors.text.secondary, textAlign: 'center' },
-  errorMsg: { ...type.bodySm, color: colors.error, textAlign: 'center' },
-  reassure: { ...type.bodySm, color: colors.text.muted, marginTop: 'auto' },
+  errorTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FF3B30',
+    marginBottom: 4,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#FF3B30',
+    lineHeight: 20,
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#FF3B30',
+    textAlign: 'center',
+  },
+  keepOpenText: {
+    fontSize: 13,
+    color: '#636366',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
 });

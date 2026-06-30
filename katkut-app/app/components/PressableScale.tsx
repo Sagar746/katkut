@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { Pressable, StyleProp, ViewStyle } from 'react-native';
+import { Insets, Pressable, StyleProp, ViewStyle } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 
 export interface PressableScaleProps {
@@ -7,12 +7,13 @@ export interface PressableScaleProps {
   onPress?: () => void;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
+  hitSlop?: number | Insets;
   /** target scale on press (spec §7: 0.98) */
   to?: number;
 }
 
 /** Pressable with a reanimated press-scale spring (spec §7 button-press motion). */
-export default function PressableScale({ children, onPress, disabled, style, to = 0.98 }: PressableScaleProps) {
+export default function PressableScale({ children, onPress, disabled, style, hitSlop, to = 0.98 }: PressableScaleProps) {
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
@@ -21,6 +22,7 @@ export default function PressableScale({ children, onPress, disabled, style, to 
       <Pressable
         onPress={onPress}
         disabled={disabled}
+        hitSlop={hitSlop}
         onPressIn={() => {
           scale.value = withSpring(to, { mass: 0.4, damping: 12 });
         }}
