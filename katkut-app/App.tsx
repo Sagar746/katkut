@@ -8,6 +8,7 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import SplashScreen from './app/SplashScreen';
 import HomeScreen from './app/HomeScreen';
 import VibeSheet from './app/VibeSheet';
+import OptionsScreen, { LengthRange } from './app/OptionsScreen';
 import ProcessingScreen from './app/ProcessingScreen';
 import ResultScreen from './app/ResultScreen';
 import EditorScreen from './app/EditorScreen';
@@ -16,7 +17,7 @@ import { PickedClip } from './app/types';
 import { AnalysisClip, Edl } from './core';
 import { Project, newProjectId, saveDraft } from './services';
 
-type Screen = 'splash' | 'home' | 'vibe' | 'processing' | 'result' | 'editor' | 'export';
+type Screen = 'splash' | 'home' | 'vibe' | 'options' | 'processing' | 'result' | 'editor' | 'export';
 
 function clipIdForIndex(index: number): string {
   return `clip_${String(index + 1).padStart(2, '0')}`;
@@ -28,6 +29,11 @@ export default function App() {
   const [analyses, setAnalyses] = useState<AnalysisClip[]>([]);
   const [edl, setEdl] = useState<Edl | null>(null);
   const [vibeId, setVibeId] = useState<string>('auto');
+  // length + audio chosen on the options screen, fed into selection
+  const [lengthRange, setLengthRange] = useState<LengthRange | null>(null);
+  const [muteAll, setMuteAll] = useState(true);
+  // set when there wasn't enough footage to reach the requested length
+  const [lengthNotice, setLengthNotice] = useState<{ requested: number; actual: number } | null>(null);
   // clipId → low-res preview-proxy URI (preview only; export uses originals)
   const [proxies, setProxies] = useState<Map<string, string>>(new Map());
   // the project being edited (new or reopened) — used for draft auto-save + library promotion
@@ -67,6 +73,12 @@ export default function App() {
 
   function handleVibe(chosen: string) {
     setVibeId(chosen);
+    setScreen('options');
+  }
+
+  function handleGenerate(length: LengthRange, mute: boolean) {
+    setLengthRange(length);
+    setMuteAll(mute);
     setScreen('processing');
   }
 
@@ -74,6 +86,12 @@ export default function App() {
     setAnalyses(a);
     setEdl(e);
     setProxies(p);
+    // not enough footage to reach the requested minimum length? (5s tolerance to avoid nagging on near-misses)
+    setLengthNotice(
+      lengthRange && e.targetDuration < lengthRange.min - 5
+        ? { requested: lengthRange.max, actual: e.targetDuration }
+        : null,
+    );
     setProjectId(newProjectId());
     setScreen('result');
   }
@@ -128,8 +146,22 @@ export default function App() {
         <VibeSheet onChoose={handleVibe} onCancel={() => setScreen('home')} />
       )}
 
+      {screen === 'options' && (
+        <OptionsScreen
+          vibeId={vibeId}
+          onBack={() => setScreen('vibe')}
+          onGenerate={handleGenerate}
+        />
+      )}
+
       {screen === 'processing' && (
-        <ProcessingScreen clips={clips} vibeId={vibeId} onDone={handleAnalysisDone} />
+        <ProcessingScreen
+          clips={clips}
+          vibeId={vibeId}
+          lengthRange={lengthRange}
+          muteAll={muteAll}
+          onDone={handleAnalysisDone}
+        />
       )}
 
       {screen === 'result' && edl && (
@@ -137,6 +169,7 @@ export default function App() {
           analyses={analyses}
           edl={edl}
           proxyByClipId={proxies}
+          notice={lengthNotice}
           onEdit={() => setScreen('editor')}
           onExport={() => setScreen('export')}
           onRegenerate={() => setScreen('vibe')}

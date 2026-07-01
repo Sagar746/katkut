@@ -52,14 +52,30 @@ function windowDuration(w: AnalysisWindow): number {
   return Math.max(0, w.end - w.start);
 }
 
+/** Universal across every vibe: clips longer than this skip their opening portion before scoring. */
+const INTRO_SKIP_MIN_DURATION = 5;
+/** Fraction of the clip's duration to skip when it's longer than INTRO_SKIP_MIN_DURATION. */
+const INTRO_SKIP_FRACTION = 0.25;
+
 /**
  * Pick the best contiguous run of windows within a clip whose total length is in
  * [minSegment, maxSegment], maximising the duration-weighted mean window score.
- * If the clip is shorter than minSegment, the whole clip is the segment.
+ * If the clip is shorter than minSegment, the whole (eligible) clip is the segment.
+ *
+ * Universal rule (applies to every vibe, since all selection paths call this): for clips longer
+ * than 5s, the first 25% is skipped before scoring even starts — openings are commonly a shaky
+ * hand-raise / camera-up moment, so we never pick a keeper from inside that intro.
  */
 export function bestSegment(clip: AnalysisClip, vibe: VibeConfig): ClipCandidate | null {
-  const windows = clip.windows;
-  if (windows.length === 0) return null;
+  if (clip.windows.length === 0) return null;
+
+  const duration = clip.duration > 0 ? clip.duration : clip.windows[clip.windows.length - 1].end;
+  let windows = clip.windows;
+  if (duration > INTRO_SKIP_MIN_DURATION) {
+    const skipUntil = duration * INTRO_SKIP_FRACTION;
+    const eligible = clip.windows.filter((w) => w.start >= skipUntil);
+    if (eligible.length > 0) windows = eligible;
+  }
 
   const scores = windows.map((w) => windowScore(w, vibe));
   const durs = windows.map(windowDuration);

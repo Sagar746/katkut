@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MoreHorizontal, Pause, Pencil, Play, Wand2, X, LucideIcon } from 'lucide-react-native';
+import { MoreHorizontal, Pause, Pencil, Play, Sparkles, Wand2, X, LucideIcon } from 'lucide-react-native';
 import EdlPlayer, { EdlPlayerHandle } from './EdlPlayer';
 import { uriMapFromAnalyses } from './resultEdl';
 import { AnalysisClip, Edl } from '../core';
@@ -14,6 +14,8 @@ export interface ResultScreenProps {
   edl: Edl;
   /** clipId → low-res preview proxy (preview only; missing entries fall back to the original) */
   proxyByClipId?: Map<string, string>;
+  /** shown when there wasn't enough footage to reach the requested length */
+  notice?: { requested: number; actual: number } | null;
   onExport: () => void;
   onEdit: () => void;
   onRegenerate: () => void;
@@ -44,6 +46,7 @@ export default function ResultScreen({
   analyses,
   edl,
   proxyByClipId,
+  notice,
   onExport,
   onEdit,
   onRegenerate,
@@ -71,6 +74,17 @@ export default function ResultScreen({
           <MoreHorizontal size={24} color={colors.text.primary} />
         </Pressable>
       </View>
+
+      {/* not-enough-footage notice */}
+      {notice && (
+        <View style={styles.notice}>
+          <Sparkles size={16} color={colors.accent.default} strokeWidth={2.5} />
+          <Text style={styles.noticeText}>
+            Not enough footage for a {notice.requested}s edit — KatKut optimized it to a tight{' '}
+            {Math.round(notice.actual)}s.
+          </Text>
+        </View>
+      )}
 
       {/* centered 9:16 preview */}
       <View style={styles.previewWrap}>
@@ -122,6 +136,17 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   title: { ...type.heading, color: colors.text.primary },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: colors.accent.bg,
+    borderRadius: radius.md,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    marginBottom: space.sm,
+  },
+  noticeText: { ...type.bodySm, color: colors.text.primary, flex: 1 },
   previewWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   preview: {
     height: '100%',

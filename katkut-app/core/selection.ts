@@ -13,18 +13,14 @@ function segDuration(c: ClipCandidate): number {
 }
 
 /**
- * The selection brain: analyses → EDL.
- *  1. best segment per clip
- *  2. keep above threshold (fallback to the single best if none clear it)
- *  3. natural length = sum of kept segments
- *  4. clamp to the vibe's [min,max]: over max → drop weakest-of-good; under min → keep as-is (tight > padded)
- *  5. order chronologically
+ * Shared assembly: a set of per-clip candidates → EDL. Used by `selectTimeline` and by the
+ * per-vibe rules in `core/rules/`.
+ *  1. keep above threshold (fallback to the single best if none clear it)
+ *  2. natural length = sum of kept segments
+ *  3. clamp to the vibe's [min,max]: over max → drop weakest-of-good; under min → keep as-is
+ *  4. order chronologically; Smart audio sets `muted` per clip
  */
-export function selectTimeline(analyses: AnalysisClip[], vibe: VibeConfig = DAILY_REEL): Edl {
-  const candidates: ClipCandidate[] = analyses
-    .map((c) => bestSegment(c, vibe))
-    .filter((c): c is ClipCandidate => c !== null);
-
+export function assembleEdl(candidates: ClipCandidate[], vibe: VibeConfig): Edl {
   let keepers = candidates.filter((c) => c.score > vibe.keepThreshold);
 
   // Never produce an empty reel if we have any footage at all.
@@ -65,4 +61,16 @@ export function selectTimeline(analyses: AnalysisClip[], vibe: VibeConfig = DAIL
     targetDuration: Math.round(naturalLen * 10) / 10,
     timeline,
   };
+}
+
+/**
+ * The generic selection brain: analyses → EDL. Picks the best segment per clip, then assembles.
+ * Per-vibe behavior (hard rejects, cut snapping, length-based pacing) lives in `core/rules/`.
+ */
+export function selectTimeline(analyses: AnalysisClip[], vibe: VibeConfig = DAILY_REEL): Edl {
+  const candidates: ClipCandidate[] = analyses
+    .map((c) => bestSegment(c, vibe))
+    .filter((c): c is ClipCandidate => c !== null);
+
+  return assembleEdl(candidates, vibe);
 }

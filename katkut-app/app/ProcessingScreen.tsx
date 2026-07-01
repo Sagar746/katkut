@@ -11,7 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Sparkles } from 'lucide-react-native';
 import { VideoAnalysis } from '../native';
-import { AnalysisClip, Edl, selectTimeline, VIBES, AUTO } from '../core';
+import { AnalysisClip, Edl, buildReel } from '../core';
 import { generateProxies } from './proxies';
 import { PickedClip } from './types';
 import { space } from './theme';
@@ -19,6 +19,10 @@ import { space } from './theme';
 export interface ProcessingScreenProps {
   clips: PickedClip[];
   vibeId: string;
+  /** chosen on the options screen — overrides the vibe's target length range */
+  lengthRange?: { min: number; max: number } | null;
+  /** chosen on the options screen — force every clip muted (default true) */
+  muteAll?: boolean;
   onDone: (analyses: AnalysisClip[], edl: Edl, proxies: Map<string, string>) => void;
 }
 
@@ -30,7 +34,13 @@ const STATUS_MESSAGES = [
   'Finalizing your edit...',
 ];
 
-export default function ProcessingScreen({ clips, vibeId, onDone }: ProcessingScreenProps) {
+export default function ProcessingScreen({
+  clips,
+  vibeId,
+  lengthRange,
+  muteAll = true,
+  onDone,
+}: ProcessingScreenProps) {
   const [progress, setProgress] = useState(0);
   const [messageIndex, setMessageIndex] = useState(0);
   const [statusText, setStatusText] = useState('');
@@ -100,16 +110,21 @@ export default function ProcessingScreen({ clips, vibeId, onDone }: ProcessingSc
         
         setProgress(0.65);
         setStatusText('AI is watching your videos...');
-        const vibe = VIBES[vibeId] ?? AUTO;
-        
+        const length = lengthRange ?? { min: 30, max: 60 };
+
         await new Promise(r => setTimeout(r, 800));
-        
+
         setProgress(0.72);
         setStatusText('Designing the timeline...');
-        const edl = selectTimeline(analyses, vibe);
-        
+        // per-vibe rules (core/rules) build the cut from the chosen vibe + length
+        const selected = buildReel(analyses, vibeId, { lengthMin: length.min, lengthMax: length.max });
+        // "Mute all" (default) overrides the Smart per-clip mute; "No" keeps Smart's flags
+        const edl = muteAll
+          ? { ...selected, timeline: selected.timeline.map((t) => ({ ...t, muted: true })) }
+          : selected;
+
         await new Promise(r => setTimeout(r, 600));
-        
+
         setProgress(0.78);
         setStatusText('Rendering previews...');
         const proxies = await generateProxies(analyses, edl, (d, n) =>
@@ -130,7 +145,7 @@ export default function ProcessingScreen({ clips, vibeId, onDone }: ProcessingSc
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [clips, vibeId, onDone]);
+  }, [clips, vibeId, lengthRange, muteAll, onDone]);
 
   if (error) {
     return (

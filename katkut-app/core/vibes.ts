@@ -77,49 +77,67 @@ export const RELAXED: VibeConfig = {
  * and pacing — we do NOT yet measure motion vectors, so "Travel favors action" is approximated
  * via looser/snappier knobs rather than true motion analysis (a later enhancement).
  */
+// NOTE: knobs below are PLACEHOLDERS so the picker works end-to-end. The real per-vibe
+// scoring rules (face presence, macro close-ups, motion tracking, beat-cut pacing,
+// transformation detection, …) are written later — see each vibe's description in the UI.
+
 export const AUTO: VibeConfig = {
   ...DAILY_REEL,
   id: 'auto',
   label: 'Auto',
 };
 
-export const FOOD: VibeConfig = {
+export const FOOD_COOKING: VibeConfig = {
   ...DAILY_REEL,
-  id: 'food_vlog',
-  label: 'Food',
-  minDuration: 20,
-  maxDuration: 45,
-  minSegment: 2.0,
-  maxSegment: 4.0,
-  // appetizing close-ups: reward sharpness + good exposure
-  weights: { sharp: 1.2, exposure: 0.9, frozenPenalty: 1.3, audio: 0.2 },
-  keepThreshold: 0.45,
-};
-
-export const TRAVEL: VibeConfig = {
-  ...DAILY_REEL,
-  id: 'travel_vlog',
-  label: 'Travel',
-  minDuration: 45,
-  maxDuration: 100,
-  minSegment: 1.5,
-  maxSegment: 3.0,
-  // scenic + lively: looser keep, snappier cuts (proxy for "action" until we add motion vectors)
-  weights: { sharp: 1.0, exposure: 0.7, frozenPenalty: 1.8, audio: 0.3 },
-  keepThreshold: 0.4,
-};
-
-export const COOKING: VibeConfig = {
-  ...DAILY_REEL,
-  id: 'cooking',
-  label: 'Cooking',
-  minDuration: 30,
-  maxDuration: 90,
+  id: 'food_cooking',
+  label: 'Food & Cooking',
+  minDuration: 25,
+  maxDuration: 60,
   minSegment: 2.5,
   maxSegment: 5.0,
-  // steady process shots held longer; don't over-penalize near-static (steady ≠ frozen)
-  weights: { sharp: 1.1, exposure: 0.6, frozenPenalty: 0.9, audio: 0.2 },
+  // aesthetic + steady: reward sharp macro shots, keep crisp original audio, hold longer
+  weights: { sharp: 1.2, exposure: 0.9, frozenPenalty: 1.0, audio: 0.4 },
+  keepThreshold: 0.45,
+  keepAudioThreshold: -28,
+};
+
+export const TRAVEL_ADVENTURE: VibeConfig = {
+  ...DAILY_REEL,
+  id: 'travel_adventure',
+  label: 'Travel & Adventure',
+  minDuration: 45,
+  maxDuration: 100,
+  minSegment: 2.0,
+  maxSegment: 4.0,
+  // scenic wide shots, smooth flowing pacing
+  weights: { sharp: 1.0, exposure: 0.8, frozenPenalty: 1.6, audio: 0.2 },
   keepThreshold: 0.4,
+};
+
+export const MINI_VLOG: VibeConfig = {
+  ...DAILY_REEL,
+  id: 'mini_vlog',
+  label: 'Mini Vlog',
+  minDuration: 30,
+  maxDuration: 75,
+  minSegment: 1.2,
+  maxSegment: 2.2,
+  // hyper-fast, high-energy beat cuts: short punchy segments, stricter keep
+  weights: { sharp: 1.0, exposure: 0.6, frozenPenalty: 1.8, audio: 0.3 },
+  keepThreshold: 0.5,
+};
+
+export const UNBOXING_STYLE: VibeConfig = {
+  ...DAILY_REEL,
+  id: 'unboxing',
+  label: 'Unboxing & Style',
+  minDuration: 25,
+  maxDuration: 70,
+  minSegment: 2.0,
+  maxSegment: 4.0,
+  // detail/transformation: reward sharpness, mix slow setups with snappy reveals
+  weights: { sharp: 1.2, exposure: 0.7, frozenPenalty: 1.2, audio: 0.2 },
+  keepThreshold: 0.45,
 };
 
 export const VIBES: Record<string, VibeConfig> = {
@@ -127,10 +145,17 @@ export const VIBES: Record<string, VibeConfig> = {
   [SNAPPY.id]: SNAPPY,
   [RELAXED.id]: RELAXED,
   [AUTO.id]: AUTO,
-  [FOOD.id]: FOOD,
-  [TRAVEL.id]: TRAVEL,
-  [COOKING.id]: COOKING,
+  [FOOD_COOKING.id]: FOOD_COOKING,
+  [TRAVEL_ADVENTURE.id]: TRAVEL_ADVENTURE,
+  [MINI_VLOG.id]: MINI_VLOG,
+  [UNBOXING_STYLE.id]: UNBOXING_STYLE,
 };
 
 /** The vibe options shown in the selector sheet, in display order. */
-export const VIBE_CHOICES: VibeConfig[] = [AUTO, FOOD, TRAVEL, COOKING];
+export const VIBE_CHOICES: VibeConfig[] = [
+  AUTO,
+  FOOD_COOKING,
+  TRAVEL_ADVENTURE,
+  MINI_VLOG,
+  UNBOXING_STYLE,
+];

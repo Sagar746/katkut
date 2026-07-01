@@ -86,15 +86,8 @@ describe('bestSegment', () => {
     expect(bestSegment(clip('clip_01', []), DAILY_REEL)).toBeNull();
   });
 
-  it('picks the sharp run over the blurry run', () => {
-    const c = clip('clip_01', [
-      SHARP(0),
-      SHARP(1),
-      SHARP(2),
-      BLURRY(3),
-      BLURRY(4),
-      BLURRY(5),
-    ]);
+  it('picks the sharp run over the blurry run (clip is exactly 5s — no intro skip yet)', () => {
+    const c = clip('clip_01', [SHARP(0), SHARP(1), SHARP(2), BLURRY(3), BLURRY(4)]);
     const seg = bestSegment(c, DAILY_REEL)!;
     expect(seg).not.toBeNull();
     expect(seg.in).toBe(0);
@@ -109,5 +102,28 @@ describe('bestSegment', () => {
     const seg = bestSegment(c, DAILY_REEL)!;
     expect(seg.in).toBe(0);
     expect(seg.out).toBe(1.5);
+  });
+
+  it('skips the first 25% of a clip longer than 5s, even if that part scores best', () => {
+    // 8s clip: the sharpest footage is in the first 2s (the intro) — it must be ignored.
+    const c = clip('clip_01', [
+      SHARP(0),
+      SHARP(1),
+      BLURRY(2),
+      BLURRY(3),
+      BLURRY(4),
+      BLURRY(5),
+      BLURRY(6),
+      BLURRY(7),
+    ]);
+    const seg = bestSegment(c, DAILY_REEL)!;
+    expect(seg).not.toBeNull();
+    expect(seg.in).toBeGreaterThanOrEqual(2); // never starts inside the skipped 0–2s intro
+  });
+
+  it('does not skip anything for a clip 5s or shorter', () => {
+    const c = clip('clip_01', [SHARP(0), SHARP(1), SHARP(2), BLURRY(3), BLURRY(4)]); // 5s exactly
+    const seg = bestSegment(c, DAILY_REEL)!;
+    expect(seg.in).toBe(0); // boundary case: 5s is NOT "longer than 5s" — no skip
   });
 });
