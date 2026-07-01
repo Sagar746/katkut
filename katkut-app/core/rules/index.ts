@@ -4,6 +4,7 @@ import { bestSegment, ClipCandidate } from '../scoring';
 import { assembleEdl } from '../selection';
 import { VibeRule, VibeRunParams } from './types';
 import { autoRule } from './auto';
+import { foodRule } from './food';
 import { makeGenericRule } from './generic';
 
 export type { VibeRule, VibeRunParams } from './types';
@@ -11,6 +12,7 @@ export type { VibeRule, VibeRunParams } from './types';
 // Vibes with dedicated logic. Others fall back to the generic rule using their VibeConfig.
 const RULES: Record<string, VibeRule> = {
   auto: autoRule,
+  food_cooking: foodRule,
 };
 
 export function getVibeRule(vibeId: string): VibeRule {
