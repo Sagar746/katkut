@@ -6,6 +6,7 @@ import { VibeRule, VibeRunParams } from './types';
 import { autoRule } from './auto';
 import { foodRule } from './food';
 import { travelRule } from './travel';
+import { miniVlogRule } from './mini_vlog';
 import { makeGenericRule } from './generic';
 
 export type { VibeRule, VibeRunParams } from './types';
@@ -15,6 +16,7 @@ const RULES: Record<string, VibeRule> = {
   auto: autoRule,
   food_cooking: foodRule,
   travel_adventure: travelRule,
+  mini_vlog: miniVlogRule,
 };
 
 export function getVibeRule(vibeId: string): VibeRule {
