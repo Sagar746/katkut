@@ -6,6 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useSharedValue, withTiming, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pause, Play, Redo2, Undo2, X, Download } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -14,6 +15,7 @@ import ClipStrip from './ClipStrip';
 import { colors, radius, space, type } from './theme';
 import { uriMapFromAnalyses } from './resultEdl';
 import { useClipThumbnails } from './useClipThumbnails';
+import { renderPhotoClip } from './photoClips';
 import { useEdlHistory } from './useEdlHistory';
 import { VideoAnalysis } from '../native';
 import {
@@ -49,8 +51,30 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
   const [progress, setProgress] = useState({ cur: 0, total: 0 });
   const [adding, setAdding] = useState(false);
 
+  // Smooth playhead: the native player reports position every 100ms. We drive a shared value that
+  // linearly glides to each sample (so the strip scrolls continuously at 60fps on the UI thread),
+  // and only throttle the React state used for the timecode text.
+  const playbackSv = useSharedValue(0);
+  const lastCurRef = useRef(0);
+  const lastTimecodeRef = useRef(0);
+  const handleProgress = (cur: number, total: number) => {
+    const jumped = Math.abs(cur - lastCurRef.current) > 0.35; // seek / loop wrap → snap, don't glide
+    lastCurRef.current = cur;
+    playbackSv.value = jumped ? cur : withTiming(cur, { duration: 130, easing: Easing.linear });
+    const now = Date.now();
+    if (now - lastTimecodeRef.current > 200) {
+      lastTimecodeRef.current = now;
+      setProgress({ cur, total });
+    }
+  };
+
   const [extraAnalyses, setExtraAnalyses] = useState<AnalysisClip[]>([]);
   const allAnalyses = useMemo(() => [...analyses, ...extraAnalyses], [analyses, extraAnalyses]);
+
+  // Freshly rendered photo preview clips (clipId → mp4), regenerated when a photo is trimmed so the
+  // preview length matches its new duration. Overrides the proxies handed in from Processing.
+  const [photoProxies, setPhotoProxies] = useState<Map<string, string>>(new Map());
+  const photoRegenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const playerRef = useRef<EdlPlayerHandle>(null);
   const pendingSeekRef = useRef<{ index: number; play: boolean } | null>(null);
@@ -61,8 +85,10 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     if (proxyByClipId) {
       for (const [clipId, uri] of proxyByClipId) m.set(clipId, uri);
     }
+    // freshly regenerated photo clips win over the originally-rendered proxies
+    for (const [clipId, uri] of photoProxies) m.set(clipId, uri);
     return m;
-  }, [allAnalyses, proxyByClipId]);
+  }, [allAnalyses, proxyByClipId, photoProxies]);
 
   const durationByClipId = useMemo(() => {
     const m = new Map<string, number>();
@@ -82,11 +108,40 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
       pendingSeekRef.current = null;
       playerRef.current?.seekToIndex(p.index, { play: p.play });
     }
-  }, [edl]);
+    // also fire after a regenerated photo proxy swaps in (reloads the playlist) so we land back
+    // on the edited clip instead of jumping to the start.
+  }, [edl, previewUriByClipId]);
+
+  // clean up any pending photo-proxy regeneration on unmount
+  useEffect(() => () => {
+    if (photoRegenTimer.current) clearTimeout(photoRegenTimer.current);
+  }, []);
+
+  // Re-render a photo's preview clip at its new duration (debounced to the end of the trim drag).
+  async function regenPhotoProxy(item: Edl['timeline'][number], index: number) {
+    const src = uriByClipId.get(item.clipId);
+    if (!src) return;
+    try {
+      const uri = await renderPhotoClip(item, src, 720, 1280);
+      setPhotoProxies((prev) => new Map(prev).set(item.clipId, uri));
+      pendingSeekRef.current = { index, play: false };
+    } catch {
+      // preview proxy is best-effort; export still renders correctly from the original
+    }
+  }
 
   function handleSelect(index: number) {
     setCurrentIndex(index);
     playerRef.current?.seekToIndex(index, { play: false });
+    // Cue the playhead at the clip's start right away. Otherwise it waits for a progress tick and,
+    // while the seek/pause round-trips through native, a late (or looping) tick can drag the strip
+    // to the last clip. Setting it here makes selection land deterministically on the tapped clip.
+    let startSec = 0;
+    for (let i = 0; i < index && i < edl.timeline.length; i++) {
+      startSec += Math.max(0, edl.timeline[i].out - edl.timeline[i].in);
+    }
+    lastCurRef.current = startSec;
+    playbackSv.value = startSec;
   }
 
   function handleToggleMute(index: number) {
@@ -101,11 +156,20 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
   }
 
   function handleTrim(index: number, newIn: number, newOut: number) {
+    const prevItem = edl.timeline[index];
     const timeline = edl.timeline.map((t, i) =>
       i === index ? { ...t, in: newIn, out: newOut } : t,
     );
     commit(recomputeTargetDuration({ ...edl, timeline }));
     pendingSeekRef.current = { index, play: false };
+
+    // Photos bake their duration into a rendered clip, so trimming one needs a fresh preview clip.
+    // Debounce to the end of the drag (trim fires continuously) to avoid re-encoding every frame.
+    if (prevItem?.kind === 'photo') {
+      if (photoRegenTimer.current) clearTimeout(photoRegenTimer.current);
+      const updated = { ...prevItem, in: newIn, out: newOut };
+      photoRegenTimer.current = setTimeout(() => regenPhotoProxy(updated, index), 350);
+    }
   }
 
   function handleReorder(from: number, to: number) {
@@ -176,7 +240,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
             loop
             onActiveIndexChange={setCurrentIndex}
             onPlayingChange={setIsPlaying}
-            onProgress={(cur, total) => setProgress({ cur, total })}
+            onProgress={handleProgress}
           />
           <Pressable
             style={styles.canvasTapOverlay}
@@ -229,7 +293,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
           onTrim={handleTrim}
           onReorder={handleReorder}
           onAddMedia={handleAddMedia}
-          playbackSec={progress.cur}
+          playbackSv={playbackSv}
           onScrub={(sec) => playerRef.current?.scrubTo(sec)}
           onScrubStart={() => playerRef.current?.pause()}
         />

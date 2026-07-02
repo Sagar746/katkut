@@ -20,14 +20,17 @@ export async function renderPhotoClip(
   width: number,
   height: number,
 ): Promise<string> {
-  const key = `${item.clipId}_${width}x${height}`;
+  const durationSec = Math.max(0, item.out - item.in) || 1.0;
+  const motionType = (item.motion?.type ?? '') as PhotoMotionType;
+  const motionAmount = item.motion?.amount ?? 0;
+
+  // Key by everything that affects the render — so a photo trimmed/extended in the editor
+  // re-renders at its new duration instead of returning the stale clip.
+  const key = `${item.clipId}_${width}x${height}_${durationSec.toFixed(2)}_${motionType}_${motionAmount}`;
   const hit = clipCache.get(key);
   if (hit) return hit;
 
   const out = new File(Paths.cache, `photo_${item.clipId}_${width}_${counter++}.mp4`);
-  const durationSec = Math.max(0, item.out - item.in) || 1.0;
-  const motionType = (item.motion?.type ?? '') as PhotoMotionType;
-  const motionAmount = item.motion?.amount ?? 0;
 
   const { outputPath } = await VideoAssembler.renderPhoto(
     sourceUri,

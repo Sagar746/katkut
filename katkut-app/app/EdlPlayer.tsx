@@ -47,7 +47,12 @@ const EdlPlayer = forwardRef<EdlPlayerHandle, EdlPlayerProps>(function EdlPlayer
         // A photo plays only via its rendered .mp4 clip (still + motion). If we only resolved the
         // raw image (e.g. a reopened draft before proxies exist), skip it rather than feed the
         // video player an image it can't decode.
-        if (t.kind === 'photo' && !uri.endsWith('.mp4')) return [];
+        if (t.kind === 'photo') {
+          if (!uri.endsWith('.mp4')) return [];
+          // The rendered photo clip bakes the trim in: it starts at 0 and is (out - in) long,
+          // so clip it [0, out-in] — not [in, out], which would run past its end after a left trim.
+          return [{ uri, inSec: 0, outSec: Math.max(0, t.out - t.in), muted: true }];
+        }
         return [{ uri, inSec: t.in, outSec: t.out, muted: t.muted }];
       }),
     [edl, uriByClipId],

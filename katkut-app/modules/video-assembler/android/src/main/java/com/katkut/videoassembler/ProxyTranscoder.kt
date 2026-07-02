@@ -216,8 +216,13 @@ class ProxyTranscoder(private val context: Context) {
     private const val MIME = "video/avc"
     private const val OUT_W = 720
     private const val OUT_H = 1280
-    private const val BITRATE = 2_500_000
+    // All-keyframe encoding (interval 0 = every frame is a sync frame). The preview player clips
+    // each playlist item to an arbitrary in-point; with sparse keyframes ExoPlayer must decode and
+    // discard every frame from the previous keyframe up to the in-point AT the clip boundary — a
+    // visible stall on every transition. All-I makes any in-point start instantly. Costs bitrate,
+    // hence 4 Mbps (proxies are throwaway preview files; export uses the originals).
+    private const val BITRATE = 4_000_000
     private const val FPS = 30
-    private const val IFRAME_INTERVAL = 1
+    private const val IFRAME_INTERVAL = 0
   }
 }

@@ -13,6 +13,12 @@ export function useClipThumbnails(timeline: Edl['timeline'], uriByClipId: Map<st
         if (thumbs[t.clipId]) continue;
         const uri = uriByClipId.get(t.clipId);
         if (!uri) continue;
+        // A photo's source IS an image — use it straight as the thumbnail (getThumbnailAsync
+        // only works on video and would throw here).
+        if (t.kind === 'photo') {
+          if (!cancelled) setThumbs((prev) => ({ ...prev, [t.clipId]: uri }));
+          continue;
+        }
         try {
           const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, {
             time: Math.max(0, t.in) * 1000,

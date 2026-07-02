@@ -115,6 +115,11 @@ class VideoPreviewView(context: Context, appContext: AppContext) : ExpoView(cont
           MediaItem.ClippingConfiguration.Builder()
             .setStartPositionMs((seg.inSec * 1000).toLong())
             .setEndPositionMs((seg.outSec * 1000).toLong())
+            // Start each clip at a keyframe instead of decoding-and-discarding from the previous
+            // keyframe up to the exact in-point at the boundary (the visible transition stall).
+            // Proxies are all-keyframe (see ProxyTranscoder), so for them this is still frame-exact;
+            // for fallback originals it trades ≤GOP in-point precision for a stall-free cut.
+            .setStartsAtKeyFrame(true)
             .build(),
         )
         .build()

@@ -2,18 +2,25 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { Image, Pressable, StyleSheet, Text, View, Dimensions } from 'react-native';
 import Animated, {
   useAnimatedStyle,
+  useAnimatedRef,
+  useDerivedValue,
   useSharedValue,
-  withSpring,
-  withTiming,
+  SharedValue,
+  scrollTo,
   runOnJS,
-  interpolate,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
-import { Plus, Trash2, Volume2, VolumeX, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Plus, Trash2, VolumeX, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Edl } from '../core';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Gesture-handler ScrollView wrapped so Reanimated's scrollTo worklet can drive it on the UI thread.
+const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
+
+// One clip's timeline layout, precomputed for the UI-thread scroll worklet.
+type ClipLayout = { startSec: number; durSec: number; offsetPx: number; widthPx: number };
 
 function hapticLight() {
   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -26,16 +33,17 @@ function hapticMedium() {
 export const PX_PER_SEC = 35;
 export const STRIP_HEIGHT = 72;
 const MIN_LEN_SEC = 0.3;
+// A photo is a still, so it has no source-footage limit — it can be held up to this long.
+const MAX_PHOTO_SEC = 10;
+// Filmstrip tile width. Thumbnails are drawn as repeated fixed-width tiles so extending a clip
+// reveals more tiles instead of zooming a single stretched image.
+const THUMB_TILE_W = 44;
 const GAP = 2;
 const LONG_PRESS_MS = 180;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.5;
 const RULER_H = 22;
 const ADD_BTN_W = 52;
-const HANDLE_HIT_WIDTH = 28;
-const HANDLE_VISUAL_WIDTH = 6;
-const EXPAND_SCALE = 1.0;
-const SELECTED_BORDER = 3;
 
 export interface ClipStripProps {
   timeline: Edl['timeline'];
@@ -49,229 +57,38 @@ export interface ClipStripProps {
   onTrim: (index: number, newIn: number, newOut: number) => void;
   onReorder: (from: number, to: number) => void;
   onAddMedia: () => void;
-  playbackSec: number;
+  /** Current playback position (seconds) as a shared value — drives the strip on the UI thread. */
+  playbackSv: SharedValue<number>;
   onScrub: (sec: number) => void;
   onScrubStart?: () => void;
 }
 
-function ClipBlock({
-  item,
+// ---- Sub-component so useAnimatedStyle is called at the top level of a component, not inside
+// a .map() loop — which would violate the Rules of Hooks and crash the app.
+function AnimatedClip({
   index,
   isSelected,
-  thumbUri,
-  clipWidth,
-  durationSec,
-  sourceDuration,
-  pxPerSec,
-  handlesEnabled,
-  onSelect,
-  onToggleMute,
-  onDelete,
-  onTrim,
-  onReorder,
-  timelineLength,
+  widthsSv,
+  translatesSv,
+  dragActiveSv,
+  children,
 }: {
-  item: Edl['timeline'][0];
   index: number;
   isSelected: boolean;
-  thumbUri?: string;
-  clipWidth: number;
-  durationSec: number;
-  sourceDuration: number;
-  pxPerSec: number;
-  handlesEnabled: boolean;
-  onSelect: (index: number) => void;
-  onToggleMute: (index: number) => void;
-  onDelete: (index: number) => void;
-  onTrim: (index: number, newIn: number, newOut: number) => void;
-  onReorder: (from: number, to: number) => void;
-  timelineLength: number;
+  widthsSv: SharedValue<number[]>;
+  translatesSv: SharedValue<number[]>;
+  dragActiveSv: SharedValue<number>;
+  children: React.ReactNode;
 }) {
-  const translateX = useSharedValue(0);
-  const scale = useSharedValue(1);
-  const isDragging = useSharedValue(false);
-  const startX = useSharedValue(0);
-  
-  const trimLeftPx = useSharedValue(0);
-  const trimRightPx = useSharedValue(0);
-  const baseIn = useSharedValue(item.in);
-  const baseOut = useSharedValue(item.out);
-
-  useEffect(() => {
-    baseIn.value = item.in;
-    baseOut.value = item.out;
-    trimLeftPx.value = withSpring(0, { damping: 20, stiffness: 200 });
-    trimRightPx.value = withSpring(0, { damping: 20, stiffness: 200 });
-  }, [item.in, item.out]);
-
-  const blockStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { scale: scale.value },
-    ],
-    zIndex: isDragging.value ? 100 : 1,
-    opacity: isDragging.value ? 0.92 : 1,
+  const animStyle = useAnimatedStyle(() => ({
+    width: widthsSv.value[index] ?? 52,
+    transform: [{ translateX: translatesSv.value[index] ?? 0 }],
+    zIndex: dragActiveSv.value === index ? 100 : isSelected ? 50 : 1,
   }));
-
-  const leftHandleStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: trimLeftPx.value }],
-  }));
-
-  const rightHandleStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: trimRightPx.value }],
-  }));
-
-  // Drag to reorder
-  const dragGesture = Gesture.Pan()
-    .activateAfterLongPress(LONG_PRESS_MS)
-    .onStart(() => {
-      isDragging.value = true;
-      scale.value = withSpring(1.06, { damping: 15 });
-      startX.value = translateX.value;
-      runOnJS(hapticMedium)();
-    })
-    .onUpdate((e) => {
-      translateX.value = startX.value + e.translationX;
-    })
-    .onEnd((e) => {
-      const totalClipW = clipWidth + GAP;
-      const slots = Math.round(e.translationX / totalClipW);
-      const newIndex = Math.max(0, Math.min(timelineLength - 1, index + slots));
-      
-      isDragging.value = false;
-      scale.value = withSpring(1, { damping: 15, stiffness: 150 });
-      translateX.value = withSpring(0, { damping: 18, stiffness: 160 });
-      
-      if (newIndex !== index) {
-        runOnJS(hapticMedium)();
-        runOnJS(onReorder)(index, newIndex);
-      }
-    });
-
-  // Left trim
-  const trimLeftGesture = Gesture.Pan()
-    .enabled(handlesEnabled && isSelected)
-    .onStart(() => {
-      baseIn.value = item.in;
-      baseOut.value = item.out;
-      runOnJS(hapticLight)();
-    })
-    .onUpdate((e) => {
-      const deltaSec = e.translationX / pxPerSec;
-      const newIn = Math.max(0, Math.min(baseOut.value - MIN_LEN_SEC, baseIn.value + deltaSec));
-      trimLeftPx.value = (newIn - baseIn.value) * pxPerSec;
-      runOnJS(onTrim)(index, newIn, baseOut.value);
-    })
-    .onEnd(() => {
-      trimLeftPx.value = withSpring(0, { damping: 20, stiffness: 200 });
-      runOnJS(hapticLight)();
-    });
-
-  // Right trim
-  const trimRightGesture = Gesture.Pan()
-    .enabled(handlesEnabled && isSelected)
-    .onStart(() => {
-      baseIn.value = item.in;
-      baseOut.value = item.out;
-      runOnJS(hapticLight)();
-    })
-    .onUpdate((e) => {
-      const deltaSec = e.translationX / pxPerSec;
-      const newOut = Math.min(sourceDuration, Math.max(baseIn.value + MIN_LEN_SEC, baseOut.value + deltaSec));
-      trimRightPx.value = (newOut - baseOut.value) * pxPerSec;
-      runOnJS(onTrim)(index, baseIn.value, newOut);
-    })
-    .onEnd(() => {
-      trimRightPx.value = withSpring(0, { damping: 20, stiffness: 200 });
-      runOnJS(hapticLight)();
-    });
-
-  const formattedDuration = durationSec >= 60
-    ? `${Math.floor(durationSec / 60)}:${String(Math.floor(durationSec % 60)).padStart(2, '0')}`
-    : `${durationSec.toFixed(1)}s`;
-
   return (
-    <View style={[styles.clipOuter, { width: clipWidth }]}>
-      {/* Trim handles */}
-      {isSelected && handlesEnabled && (
-        <>
-          <GestureDetector gesture={trimLeftGesture}>
-            <Animated.View style={[styles.handleHitArea, styles.handleHitLeft, leftHandleStyle]}>
-              <View style={styles.handleVisual}>
-                <ChevronLeft size={8} color="#000" strokeWidth={3} />
-              </View>
-            </Animated.View>
-          </GestureDetector>
-          
-          <GestureDetector gesture={trimRightGesture}>
-            <Animated.View style={[styles.handleHitArea, styles.handleHitRight, rightHandleStyle]}>
-              <View style={styles.handleVisual}>
-                <ChevronRight size={8} color="#000" strokeWidth={3} />
-              </View>
-            </Animated.View>
-          </GestureDetector>
-        </>
-      )}
-
-      {/* Main clip */}
-      <GestureDetector gesture={dragGesture}>
-        <Animated.View style={[styles.clipBlock, blockStyle]}>
-          <Pressable
-            onPress={() => {
-              hapticLight();
-              onSelect(index);
-            }}
-            style={[styles.clipInner, isSelected && styles.clipInnerSelected]}
-          >
-            {thumbUri ? (
-              <Image source={{ uri: thumbUri }} style={styles.clipThumb} />
-            ) : (
-              <View style={styles.clipPlaceholder} />
-            )}
-
-            {/* Bottom info bar */}
-            <View style={styles.bottomBar}>
-              <Text style={styles.durationLabel} numberOfLines={1}>
-                {formattedDuration}
-              </Text>
-            </View>
-
-            {/* Mute indicator */}
-            {item.muted && (
-              <View style={styles.muteIndicator}>
-                <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
-              </View>
-            )}
-
-            {/* Top row: delete + mute */}
-            <View style={styles.topRow}>
-              {item.muted ? (
-                <Pressable
-                  hitSlop={6}
-                  onPress={() => onToggleMute(index)}
-                  style={styles.topBadge}
-                >
-                  <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
-                </Pressable>
-              ) : null}
-              
-              {isSelected && handlesEnabled && (
-                <Pressable
-                  hitSlop={6}
-                  onPress={() => {
-                    hapticMedium();
-                    onDelete(index);
-                  }}
-                  style={[styles.topBadge, styles.deleteBadge]}
-                >
-                  <Trash2 size={10} color="#FFF" strokeWidth={2.5} />
-                </Pressable>
-              )}
-            </View>
-          </Pressable>
-        </Animated.View>
-      </GestureDetector>
-    </View>
+    <Animated.View style={[styles.clipBlock, animStyle]}>
+      {children}
+    </Animated.View>
   );
 }
 
@@ -287,91 +104,253 @@ export default function ClipStrip({
   onTrim,
   onReorder,
   onAddMedia,
-  playbackSec,
+  playbackSv,
   onScrub,
   onScrubStart,
 }: ClipStripProps) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const [stripWidth, setStripWidth] = useState(SCREEN_WIDTH);
   const [zoom, setZoom] = useState(1);
   const zoomStartRef = useRef(1);
   const userScrubbingRef = useRef(false);
+  const scrubEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pxPerSec = PX_PER_SEC * zoom;
   const padStart = stripWidth / 2;
 
-  const layoutData = useMemo(() => {
-    const widths: number[] = [];
-    const leftEdges: number[] = [];
-    const lens: number[] = [];
-    let cursor = padStart;
+  // ---- Shared values stored as arrays so useSharedValue is only ever called at the top
+  // level of the component — never inside a function or loop (Rules of Hooks).
+  const clipWidthsSv = useSharedValue<number[]>(
+    timeline.map(item => Math.max(52, Math.max(0, item.out - item.in) * PX_PER_SEC)),
+  );
+  const clipTranslatesSv = useSharedValue<number[]>(timeline.map(() => 0));
+  const dragActive = useSharedValue(-1);
+  const dragStartX = useSharedValue(0);
+  const dragCurrentX = useSharedValue(0);
 
-    timeline.forEach((item) => {
-      const lenSec = Math.max(0, item.out - item.in);
-      const w = Math.max(52, lenSec * pxPerSec);
-      widths.push(w);
-      lens.push(lenSec);
-      leftEdges.push(cursor);
-      cursor += w + GAP;
+  // Precomputed clip layout + a scrubbing flag, read by the UI-thread scroll driver worklet.
+  const layoutSv = useSharedValue<ClipLayout[]>([]);
+  const scrubbingSv = useSharedValue(false);
+
+  // Sync widths when timeline or zoom changes.
+  useEffect(() => {
+    clipWidthsSv.value = timeline.map(item => {
+      const len = Math.max(0, item.out - item.in);
+      return Math.max(52, len * pxPerSec);
     });
+  }, [timeline, pxPerSec]);
 
-    const totalDuration = lens.reduce((sum, l) => sum + l, 0);
-    return { widths, leftEdges, lens, totalDuration, totalWidth: cursor };
+  // Keep the translates array length in sync with the timeline.
+  useEffect(() => {
+    if (clipTranslatesSv.value.length !== timeline.length) {
+      clipTranslatesSv.value = timeline.map(() => 0);
+    }
+  }, [timeline.length]);
+
+  // compute total duration
+  const totalDuration = useMemo(() => {
+    return timeline.reduce((sum, t) => sum + Math.max(0, t.out - t.in), 0);
+  }, [timeline]);
+
+  // ruler ticks
+  const rulerTicks = useMemo(() => {
+    const ticks: number[] = [];
+    const interval = zoom < 1 ? 10 : zoom < 2 ? 5 : 1;
+    for (let s = 0; s <= Math.ceil(totalDuration); s += interval) {
+      ticks.push(s);
+    }
+    return ticks;
+  }, [totalDuration, zoom]);
+
+  // Scroll-center pixel → timeline seconds. Inverse of the scroll driver's mapping, using the SAME
+  // cumulative layout (offsetPx already includes every preceding clip's width + gaps). The old
+  // version forgot the preceding widths, so any scroll ran off the end and returned total duration —
+  // which made scrubbing jump straight to the last clip.
+  const timeAtPixel = useCallback((px: number) => {
+    const layout = layoutSv.value;
+    if (layout.length === 0) return 0;
+    for (let i = 0; i < layout.length; i++) {
+      const e = layout[i];
+      if (px < e.offsetPx + e.widthPx || i === layout.length - 1) {
+        const within = Math.min(1, Math.max(0, (px - e.offsetPx) / e.widthPx));
+        return e.startSec + within * e.durSec;
+      }
+    }
+    return 0;
+  }, [layoutSv]);
+
+  // Precompute each clip's start-time + pixel offset so the scroll worklet can map seconds → pixels
+  // without walking React state. Rebuilt only when the timeline, zoom, or width actually change.
+  useEffect(() => {
+    let offsetPx = padStart;
+    let startSec = 0;
+    layoutSv.value = timeline.map((item) => {
+      const durSec = Math.max(0, item.out - item.in);
+      const widthPx = Math.max(52, durSec * pxPerSec);
+      const entry: ClipLayout = { startSec, durSec, offsetPx, widthPx };
+      startSec += durSec;
+      offsetPx += widthPx + GAP;
+      return entry;
+    });
   }, [timeline, pxPerSec, padStart]);
 
-  function timeAtPixel(px: number): number {
-    const { widths, leftEdges, lens } = layoutData;
-    let elapsed = 0;
-    for (let i = 0; i < widths.length; i++) {
-      if (px < leftEdges[i] + widths[i] || i === widths.length - 1) {
-        const within = Math.min(1, Math.max(0, (px - leftEdges[i]) / widths[i]));
-        return elapsed + within * lens[i];
+  // UI-thread playhead driver: maps the (interpolated) playback second → a scroll offset and drives
+  // the ScrollView every frame via Reanimated's scrollTo worklet. Because playbackSv glides between
+  // the native player's 100ms samples, the strip scrolls smoothly at 60fps and stays synced to the
+  // video — no JS round-trips, no fighting animated scrollTo calls. Yields while the user scrubs.
+  useDerivedValue(() => {
+    const layout = layoutSv.value;
+    if (scrubbingSv.value || layout.length === 0) return;
+    const sec = playbackSv.value;
+    let px = padStart;
+    for (let i = 0; i < layout.length; i++) {
+      const e = layout[i];
+      if (sec <= e.startSec + e.durSec || i === layout.length - 1) {
+        const within = e.durSec > 0 ? (sec - e.startSec) / e.durSec : 0;
+        const clamped = within < 0 ? 0 : within > 1 ? 1 : within;
+        px = e.offsetPx + clamped * e.widthPx;
+        break;
       }
-      elapsed += lens[i];
     }
-    return elapsed;
-  }
-
-  function pixelForTime(t: number): number {
-    const { leftEdges, widths, lens } = layoutData;
-    let elapsed = 0;
-    for (let i = 0; i < lens.length; i++) {
-      if (t <= elapsed + lens[i] || i === lens.length - 1) {
-        const within = lens[i] > 0 ? Math.min(1, (t - elapsed) / lens[i]) : 0;
-        return leftEdges[i] + within * widths[i];
-      }
-      elapsed += lens[i];
-    }
-    return padStart;
-  }
-
-  useEffect(() => {
-    if (userScrubbingRef.current) return;
-    const px = pixelForTime(playbackSec);
-    scrollRef.current?.scrollTo({ x: Math.max(0, px - stripWidth / 2), animated: true });
-  }, [playbackSec]);
+    scrollTo(scrollRef, Math.max(0, px - stripWidth / 2), 0, false);
+  });
 
   const handleScroll = useCallback((e: any) => {
     if (!userScrubbingRef.current) return;
     const centerPx = e.nativeEvent.contentOffset.x + stripWidth / 2;
     onScrub(timeAtPixel(centerPx));
-  }, [stripWidth, layoutData, onScrub]);
+  }, [stripWidth, timeAtPixel, onScrub]);
 
+  // Scrubbing = the user owns the scroll; the UI-thread driver must fully yield until the strip
+  // settles (finger up AND momentum finished), otherwise it snaps back to the playback position.
+  const beginScrub = useCallback(() => {
+    if (scrubEndTimer.current) { clearTimeout(scrubEndTimer.current); scrubEndTimer.current = null; }
+    userScrubbingRef.current = true;
+    scrubbingSv.value = true;
+    onScrubStart?.();
+  }, [onScrubStart, scrubbingSv]);
+
+  const endScrub = useCallback(() => {
+    userScrubbingRef.current = false;
+    scrubbingSv.value = false;
+  }, [scrubbingSv]);
+
+  const onEndDrag = useCallback(() => {
+    // finger lifted — end scrubbing unless momentum takes over within a moment
+    if (scrubEndTimer.current) clearTimeout(scrubEndTimer.current);
+    scrubEndTimer.current = setTimeout(endScrub, 80);
+  }, [endScrub]);
+
+  const onMomentumBegin = useCallback(() => {
+    if (scrubEndTimer.current) { clearTimeout(scrubEndTimer.current); scrubEndTimer.current = null; }
+  }, []);
+
+  useEffect(() => () => {
+    if (scrubEndTimer.current) clearTimeout(scrubEndTimer.current);
+  }, []);
+
+  // Pinch zoom
   const pinchGesture = Gesture.Pinch()
     .onStart(() => { zoomStartRef.current = zoom; })
     .onUpdate((e) => {
       const newZoom = zoomStartRef.current * e.scale;
-      setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom)));
+      runOnJS(setZoom)(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom)));
     });
 
-  const rulerTicks = useMemo(() => {
-    const ticks: number[] = [];
-    const interval = zoom < 1 ? 10 : zoom < 2 ? 5 : 1;
-    for (let s = 0; s <= Math.ceil(layoutData.totalDuration); s += interval) {
-      ticks.push(s);
+  // ---- DRAG REORDER LOGIC ----
+  const startDrag = useCallback((index: number) => {
+    dragActive.value = index;
+    dragStartX.value = clipTranslatesSv.value[index] ?? 0;
+  }, [clipTranslatesSv]);
+
+  const updateDrag = useCallback((translationX: number) => {
+    const idx = dragActive.value;
+    if (idx < 0) return;
+    dragCurrentX.value = translationX;
+    const newX = dragStartX.value + translationX;
+
+    const widths = clipWidthsSv.value;
+    const draggedWidth = widths[idx] ?? 0;
+    const draggedCenter = newX + draggedWidth / 2;
+
+    let targetIdx = idx;
+    let minDist = Infinity;
+    for (let i = 0; i < timeline.length; i++) {
+      const w = widths[i] ?? 0;
+      const currentTranslate = clipTranslatesSv.value[i] ?? 0;
+      const center = i === idx ? draggedCenter : currentTranslate + w / 2;
+      const dist = Math.abs(center - draggedCenter);
+      if (dist < minDist && i !== idx) {
+        minDist = dist;
+        targetIdx = i;
+      }
     }
-    return ticks;
-  }, [layoutData.totalDuration, zoom]);
+
+    const newTranslates = [...clipTranslatesSv.value];
+    newTranslates[idx] = newX;
+    for (let i = 0; i < timeline.length; i++) {
+      if (i === idx) continue;
+      if (i < targetIdx && i >= idx) newTranslates[i] = -draggedWidth - GAP;
+      else if (i > targetIdx && i <= idx) newTranslates[i] = draggedWidth + GAP;
+      else newTranslates[i] = 0;
+    }
+    clipTranslatesSv.value = newTranslates;
+  }, [timeline, clipWidthsSv, clipTranslatesSv]);
+
+  const endDrag = useCallback(() => {
+    const idx = dragActive.value;
+    if (idx < 0) return;
+    const widths = clipWidthsSv.value;
+    const currentX = clipTranslatesSv.value[idx] ?? 0;
+    const draggedWidth = widths[idx] ?? 0;
+    const draggedCenter = currentX + draggedWidth / 2;
+
+    let targetIdx = idx;
+    let minDist = Infinity;
+    for (let i = 0; i < timeline.length; i++) {
+      const w = widths[i] ?? 0;
+      const currentTranslate = clipTranslatesSv.value[i] ?? 0;
+      const center = i === idx ? draggedCenter : currentTranslate + w / 2;
+      const dist = Math.abs(center - draggedCenter);
+      if (dist < minDist && i !== idx) {
+        minDist = dist;
+        targetIdx = i;
+      }
+    }
+
+    clipTranslatesSv.value = timeline.map(() => 0);
+    dragActive.value = -1;
+    if (targetIdx !== idx) {
+      hapticMedium();
+      onReorder(idx, targetIdx);
+    }
+  }, [onReorder, timeline, clipWidthsSv, clipTranslatesSv]);
+
+  // ---- TRIM LOGIC ----
+  const trimLeft = useCallback((index: number, translationX: number) => {
+    const item = timeline[index];
+    const deltaSec = translationX / pxPerSec;
+    const newIn = Math.max(0, Math.min(item.out - MIN_LEN_SEC, item.in + deltaSec));
+    const newWidth = Math.max(52, (item.out - newIn) * pxPerSec);
+    const newWidths = [...clipWidthsSv.value];
+    newWidths[index] = newWidth;
+    clipWidthsSv.value = newWidths;
+    onTrim(index, newIn, item.out);
+  }, [timeline, pxPerSec, onTrim, clipWidthsSv]);
+
+  const trimRight = useCallback((index: number, translationX: number) => {
+    const item = timeline[index];
+    // A photo is a still with no source footage — let it stretch up to MAX_PHOTO_SEC. Videos are
+    // capped at their actual source duration.
+    const sourceDur = item.kind === 'photo' ? MAX_PHOTO_SEC : (durationByClipId.get(item.clipId) ?? item.out);
+    const deltaSec = translationX / pxPerSec;
+    const newOut = Math.min(sourceDur, Math.max(item.in + MIN_LEN_SEC, item.out + deltaSec));
+    const newWidth = Math.max(52, (newOut - item.in) * pxPerSec);
+    const newWidths = [...clipWidthsSv.value];
+    newWidths[index] = newWidth;
+    clipWidthsSv.value = newWidths;
+    onTrim(index, item.in, newOut);
+  }, [timeline, durationByClipId, pxPerSec, onTrim, clipWidthsSv]);
 
   return (
     <View
@@ -394,54 +373,155 @@ export default function ClipStrip({
             ))}
           </View>
 
-          <ScrollView
+          <AnimatedScrollView
             ref={scrollRef}
             horizontal
             showsHorizontalScrollIndicator={false}
-            onScrollBeginDrag={() => {
-              userScrubbingRef.current = true;
-              onScrubStart?.();
-            }}
-            onScrollEndDrag={() => { userScrubbingRef.current = false; }}
+            onScrollBeginDrag={beginScrub}
+            onScrollEndDrag={onEndDrag}
+            onMomentumScrollBegin={onMomentumBegin}
+            onMomentumScrollEnd={endScrub}
             onScroll={handleScroll}
             scrollEventThrottle={16}
             contentContainerStyle={styles.scrollInner}
           >
             <View style={{ width: padStart }} />
-            
             <View style={styles.clipsRow}>
-              {timeline.map((item, i) => (
-                <ClipBlock
-                  key={`${item.clipId}-${i}`}
-                  item={item}
-                  index={i}
-                  isSelected={i === selectedIndex}
-                  thumbUri={thumbs[item.clipId]}
-                  clipWidth={layoutData.widths[i]}
-                  durationSec={layoutData.lens[i]}
-                  sourceDuration={durationByClipId.get(item.clipId) ?? item.out}
-                  pxPerSec={pxPerSec}
-                  handlesEnabled={handlesEnabled}
-                  onSelect={onSelect}
-                  onToggleMute={onToggleMute}
-                  onDelete={onDelete}
-                  onTrim={onTrim}
-                  onReorder={onReorder}
-                  timelineLength={timeline.length}
-                />
-              ))}
+              {timeline.map((item, i) => {
+                const isSelected = i === selectedIndex;
+                const thumbUri = thumbs[item.clipId];
+
+                // Drag gesture
+                const dragGesture = Gesture.Pan()
+                  .activateAfterLongPress(LONG_PRESS_MS)
+                  .onStart(() => {
+                    runOnJS(startDrag)(i);
+                    runOnJS(hapticMedium)();
+                  })
+                  .onUpdate((e) => {
+                    runOnJS(updateDrag)(e.translationX);
+                  })
+                  .onEnd(() => {
+                    runOnJS(endDrag)();
+                  });
+
+                // Trim gestures
+                const trimLeftGesture = Gesture.Pan()
+                  .enabled(handlesEnabled && isSelected)
+                  .onStart(() => runOnJS(hapticLight)())
+                  .onUpdate((e) => runOnJS(trimLeft)(i, e.translationX))
+                  .onEnd(() => runOnJS(hapticLight)());
+
+                const trimRightGesture = Gesture.Pan()
+                  .enabled(handlesEnabled && isSelected)
+                  .onStart(() => runOnJS(hapticLight)())
+                  .onUpdate((e) => runOnJS(trimRight)(i, e.translationX))
+                  .onEnd(() => runOnJS(hapticLight)());
+
+                const durationSec = Math.max(0, item.out - item.in);
+                const formattedDuration = durationSec >= 60
+                  ? `${Math.floor(durationSec / 60)}:${String(Math.floor(durationSec % 60)).padStart(2, '0')}`
+                  : `${durationSec.toFixed(1)}s`;
+
+                // Filmstrip: fixed-width tiles of the same thumbnail, so widening the clip reveals
+                // more tiles instead of zooming one stretched image. Count from the settled width.
+                const clipW = Math.max(52, durationSec * pxPerSec);
+                const tileCount = Math.max(1, Math.ceil(clipW / THUMB_TILE_W));
+
+                return (
+                  <View key={`${item.clipId}-${i}`} style={styles.clipWrapper}>
+                    {/* Trim handles */}
+                    {isSelected && handlesEnabled && (
+                      <>
+                        <GestureDetector gesture={trimLeftGesture}>
+                          <Animated.View style={[styles.trimHandle, styles.trimHandleLeft]}>
+                            <View style={styles.trimHandleInner}>
+                              <ChevronLeft size={12} color="#000" strokeWidth={3} />
+                            </View>
+                          </Animated.View>
+                        </GestureDetector>
+                        <GestureDetector gesture={trimRightGesture}>
+                          <Animated.View style={[styles.trimHandle, styles.trimHandleRight]}>
+                            <View style={styles.trimHandleInner}>
+                              <ChevronRight size={12} color="#000" strokeWidth={3} />
+                            </View>
+                          </Animated.View>
+                        </GestureDetector>
+                      </>
+                    )}
+
+                    <GestureDetector gesture={dragGesture}>
+                      {/* AnimatedClip is a sub-component so useAnimatedStyle runs at the top
+                          level of that component — not inside this .map() loop. */}
+                      <AnimatedClip
+                        index={i}
+                        isSelected={isSelected}
+                        widthsSv={clipWidthsSv}
+                        translatesSv={clipTranslatesSv}
+                        dragActiveSv={dragActive}
+                      >
+                        <Pressable
+                          onPress={() => {
+                            hapticLight();
+                            onSelect(i);
+                          }}
+                          style={[styles.clipInner, isSelected && styles.clipInnerSelected]}
+                        >
+                          {thumbUri ? (
+                            <View style={styles.filmstrip} pointerEvents="none">
+                              {Array.from({ length: tileCount }).map((_, k) => (
+                                <Image key={k} source={{ uri: thumbUri }} style={styles.filmTile} />
+                              ))}
+                            </View>
+                          ) : (
+                            <View style={styles.clipPlaceholder} />
+                          )}
+
+                          {/* Bottom duration */}
+                          <View style={styles.bottomBar}>
+                            <Text style={styles.durationLabel} numberOfLines={1}>
+                              {formattedDuration}
+                            </Text>
+                          </View>
+
+                          {/* Mute/delete controls */}
+                          <View style={styles.topRow}>
+                            {item.muted && (
+                              <Pressable hitSlop={6} onPress={() => onToggleMute(i)} style={styles.topBadge}>
+                                <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
+                              </Pressable>
+                            )}
+                            {isSelected && handlesEnabled && (
+                              <Pressable
+                                hitSlop={6}
+                                onPress={() => {
+                                  hapticMedium();
+                                  onDelete(i);
+                                }}
+                                style={[styles.topBadge, styles.deleteBadge]}
+                              >
+                                <Trash2 size={10} color="#FFF" strokeWidth={2.5} />
+                              </Pressable>
+                            )}
+                          </View>
+                        </Pressable>
+                      </AnimatedClip>
+                    </GestureDetector>
+                  </View>
+                );
+              })}
 
               <Pressable style={styles.addBtn} onPress={onAddMedia}>
                 <Plus size={20} color="#8E8E93" strokeWidth={2} />
               </Pressable>
             </View>
-
             <View style={{ width: padStart }} />
-          </ScrollView>
+          </AnimatedScrollView>
 
           {/* Playhead */}
           <View style={styles.playhead} pointerEvents="none">
             <View style={styles.playheadLine} />
+            <View style={styles.playheadDot} />
           </View>
         </View>
       </GestureDetector>
@@ -458,8 +538,6 @@ const styles = StyleSheet.create({
     height: RULER_H + STRIP_HEIGHT + 12,
     position: 'relative',
   },
-
-  // Ruler
   ruler: {
     position: 'absolute',
     top: 0,
@@ -482,24 +560,18 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontVariant: ['tabular-nums'],
   },
-
   scrollInner: {
     paddingTop: RULER_H + 4,
   },
-
   clipsRow: {
     flexDirection: 'row',
-    gap: GAP,
     alignItems: 'center',
+    gap: GAP,
   },
-
-  // Clip outer wrapper
-  clipOuter: {
-    height: STRIP_HEIGHT,
+  clipWrapper: {
     position: 'relative',
+    height: STRIP_HEIGHT,
   },
-
-  // Clip block
   clipBlock: {
     height: STRIP_HEIGHT,
     borderRadius: 6,
@@ -513,12 +585,22 @@ const styles = StyleSheet.create({
     borderColor: '#2C2C2E',
   },
   clipInnerSelected: {
-    borderWidth: SELECTED_BORDER,
-    borderColor: '#FFCC00', // Yellow selection
+    borderWidth: 3,
+    borderColor: '#FFCC00',
     borderRadius: 8,
   },
-  clipThumb: {
-    width: '100%',
+  filmstrip: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    overflow: 'hidden',
+  },
+  filmTile: {
+    width: THUMB_TILE_W,
     height: '100%',
     resizeMode: 'cover',
   },
@@ -526,8 +608,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1C1C1E',
   },
-
-  // Bottom bar
   bottomBar: {
     position: 'absolute',
     bottom: 0,
@@ -544,21 +624,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-
-  // Mute indicator
-  muteIndicator: {
-    position: 'absolute',
-    top: 3,
-    right: 3,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Top row
   topRow: {
     position: 'absolute',
     top: 3,
@@ -577,37 +642,34 @@ const styles = StyleSheet.create({
   deleteBadge: {
     backgroundColor: 'rgba(255, 59, 48, 0.85)',
   },
-
-  // Trim handles
-  handleHitArea: {
+  trimHandle: {
     position: 'absolute',
-    top: -2,
-    bottom: -2,
-    width: HANDLE_HIT_WIDTH,
+    top: STRIP_HEIGHT / 2 - 14,
+    width: 28,
+    height: 28,
+    zIndex: 60,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 60,
   },
-  handleHitLeft: {
-    left: -HANDLE_HIT_WIDTH / 2,
-    alignItems: 'flex-end',
-    paddingRight: 2,
+  trimHandleLeft: {
+    left: -14,
   },
-  handleHitRight: {
-    right: -HANDLE_HIT_WIDTH / 2,
-    alignItems: 'flex-start',
-    paddingLeft: 2,
+  trimHandleRight: {
+    right: -14,
   },
-  handleVisual: {
-    width: HANDLE_VISUAL_WIDTH,
-    height: 22,
-    borderRadius: 3,
+  trimHandleInner: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#FFCC00',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 3,
+    elevation: 5,
   },
-
-  // Add button
   addBtn: {
     width: ADD_BTN_W,
     height: STRIP_HEIGHT,
@@ -619,8 +681,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: 4,
   },
-
-  // Playhead
   playhead: {
     position: 'absolute',
     top: 0,
@@ -633,6 +693,15 @@ const styles = StyleSheet.create({
   },
   playheadLine: {
     flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  playheadDot: {
+    position: 'absolute',
+    top: 0,
+    left: -4,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: '#FFFFFF',
   },
 });
