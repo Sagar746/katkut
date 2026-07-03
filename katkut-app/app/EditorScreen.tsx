@@ -6,7 +6,14 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSharedValue, withTiming, Easing } from 'react-native-reanimated';
+import {
+  useSharedValue,
+  useAnimatedReaction,
+  withTiming,
+  Easing,
+  runOnJS,
+  SharedValue,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pause, Play, Redo2, Undo2, X, Download } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -43,29 +50,50 @@ function fmtTime(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
 }
 
+/**
+ * Timecode display isolated into its own component: it reads the playback shared value and
+ * re-renders only ITSELF once per whole second — the editor (and the strip) never re-render
+ * from playback progress.
+ */
+function Timecode({ playbackSv, totalSec }: { playbackSv: SharedValue<number>; totalSec: number }) {
+  const [curSec, setCurSec] = useState(0);
+  useAnimatedReaction(
+    () => Math.floor(Math.max(0, playbackSv.value)),
+    (sec, prev) => {
+      if (sec !== prev) runOnJS(setCurSec)(sec);
+    },
+  );
+  return (
+    <View style={styles.timecodeDisplayFrame}>
+      <Text style={styles.timecodeActive}>{fmtTime(curSec)}</Text>
+      <Text style={styles.timecodeDivider}>/</Text>
+      <Text style={styles.timecodeTotal}>{fmtTime(totalSec)}</Text>
+    </View>
+  );
+}
+
 export default function EditorScreen({ analyses, initialEdl, onBack, onExport, proxyByClipId }: EditorScreenProps) {
   const insets = useSafeAreaInsets();
-  const { edl, commit, setTransient, beginDrag, endDrag, undo, redo, canUndo, canRedo } =
-    useEdlHistory(initialEdl);
+  const { edl, commit, undo, redo, canUndo, canRedo } = useEdlHistory(initialEdl);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
-  const [progress, setProgress] = useState({ cur: 0, total: 0 });
+  // total length only — the CURRENT position is never React state (it would re-render the whole
+  // editor several times a second during playback); the Timecode component reads playbackSv itself.
+  const [totalSec, setTotalSec] = useState(0);
   const [adding, setAdding] = useState(false);
 
   // Smooth playhead: the native player reports position every 100ms. We drive a shared value that
-  // linearly glides to each sample (so the strip scrolls continuously at 60fps on the UI thread),
-  // and only throttle the React state used for the timecode text.
+  // linearly glides to each sample, so the strip scrolls continuously at 60fps on the UI thread.
   const playbackSv = useSharedValue(0);
   const lastCurRef = useRef(0);
-  const lastTimecodeRef = useRef(0);
+  const lastTotalRef = useRef(0);
   const handleProgress = (cur: number, total: number) => {
     const jumped = Math.abs(cur - lastCurRef.current) > 0.35; // seek / loop wrap → snap, don't glide
     lastCurRef.current = cur;
     playbackSv.value = jumped ? cur : withTiming(cur, { duration: 130, easing: Easing.linear });
-    const now = Date.now();
-    if (now - lastTimecodeRef.current > 200) {
-      lastTimecodeRef.current = now;
-      setProgress({ cur, total });
+    if (Math.abs(total - lastTotalRef.current) > 0.01) {
+      lastTotalRef.current = total;
+      setTotalSec(total); // changes only when the timeline itself changes
     }
   };
 
@@ -75,7 +103,6 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
   // Freshly rendered photo preview clips (clipId → mp4), regenerated when a photo is trimmed so the
   // preview length matches its new duration. Overrides the proxies handed in from Processing.
   const [photoProxies, setPhotoProxies] = useState<Map<string, string>>(new Map());
-  const photoRegenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const playerRef = useRef<EdlPlayerHandle>(null);
   const pendingSeekRef = useRef<{ index: number; play: boolean } | null>(null);
@@ -113,12 +140,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     // on the edited clip instead of jumping to the start.
   }, [edl, previewUriByClipId]);
 
-  // clean up any pending photo-proxy regeneration on unmount
-  useEffect(() => () => {
-    if (photoRegenTimer.current) clearTimeout(photoRegenTimer.current);
-  }, []);
-
-  // Re-render a photo's preview clip at its new duration (debounced to the end of the trim drag).
+  // Re-render a photo's preview clip at its new committed duration (called once per trim commit).
   async function regenPhotoProxy(item: Edl['timeline'][number], index: number) {
     const src = uriByClipId.get(item.clipId);
     if (!src) return;
@@ -156,42 +178,20 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     pendingSeekRef.current = { index: Math.min(index, next.timeline.length - 1), play: isPlaying };
   }
 
-  // Trim is a continuous gesture: start/update/end map to ONE history transaction
-  // (beginDrag → setTransient per tick → endDrag = a single undo step), and the preview player's
-  // EDL is frozen for the whole drag so the native playlist rebuilds once at the end — not per frame.
-  const [trimming, setTrimming] = useState(false);
-  const liveTrimEdlRef = useRef<Edl | null>(null);
-
-  function handleTrimStart() {
-    beginDrag();
-    liveTrimEdlRef.current = null;
-    setTrimming(true);
-  }
-
-  function handleTrim(index: number, newIn: number, newOut: number) {
+  // Trim commits ONCE, on release. During the drag the strip animates entirely on the UI thread
+  // (see ClipStrip) — no React state changes, no history churn, no playlist rebuilds until here.
+  function handleTrimCommit(index: number, newIn: number, newOut: number) {
     const prevItem = edl.timeline[index];
     const timeline = edl.timeline.map((t, i) =>
       i === index ? { ...t, in: newIn, out: newOut } : t,
     );
-    const next = recomputeTargetDuration({ ...edl, timeline });
-    liveTrimEdlRef.current = next;
-    setTransient(next); // live strip/duration updates without touching undo history
+    commit(recomputeTargetDuration({ ...edl, timeline })); // one undo step per drag
+    pendingSeekRef.current = { index, play: false };
 
     // Photos bake their duration into a rendered clip, so trimming one needs a fresh preview clip.
-    // Debounce to the end of the drag (trim fires continuously) to avoid re-encoding every frame.
     if (prevItem?.kind === 'photo') {
-      if (photoRegenTimer.current) clearTimeout(photoRegenTimer.current);
-      const updated = { ...prevItem, in: newIn, out: newOut };
-      photoRegenTimer.current = setTimeout(() => regenPhotoProxy(updated, index), 350);
+      regenPhotoProxy({ ...prevItem, in: newIn, out: newOut }, index);
     }
-  }
-
-  function handleTrimEnd(index: number) {
-    const final = liveTrimEdlRef.current;
-    liveTrimEdlRef.current = null;
-    setTrimming(false); // unfreezes the player EDL → one playlist rebuild
-    if (final) endDrag(final); // one undo step for the whole drag
-    pendingSeekRef.current = { index, play: false };
   }
 
   function handleReorder(from: number, to: number) {
@@ -237,12 +237,6 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     }
   }
 
-  // The preview player's EDL: held at the pre-drag value while trimming so the native playlist
-  // isn't rebuilt on every trim tick; picks up the final EDL in the same render that ends the drag.
-  const playerEdlRef = useRef(edl);
-  if (!trimming) playerEdlRef.current = edl;
-  const playerEdl = playerEdlRef.current;
-
   return (
     <View style={styles.root}>
       {/* Top Professional Header Navigation */}
@@ -262,7 +256,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
         <View style={styles.canvasContainer}>
           <EdlPlayer
             ref={playerRef}
-            edl={playerEdl}
+            edl={edl}
             uriByClipId={previewUriByClipId}
             fill
             loop
@@ -291,11 +285,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
           )}
         </Pressable>
 
-        <View style={styles.timecodeDisplayFrame}>
-          <Text style={styles.timecodeActive}>{fmtTime(progress.cur)}</Text>
-          <Text style={styles.timecodeDivider}>/</Text>
-          <Text style={styles.timecodeTotal}>{fmtTime(progress.total)}</Text>
-        </View>
+        <Timecode playbackSv={playbackSv} totalSec={totalSec} />
 
         <View style={styles.historyTrackGroup}>
           <Pressable hitSlop={8} onPress={undo} disabled={!canUndo} style={[styles.historyActionBtn, !canUndo && styles.disabledHistory]}>
@@ -318,9 +308,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
           onSelect={handleSelect}
           onToggleMute={handleToggleMute}
           onDelete={handleDelete}
-          onTrimStart={handleTrimStart}
-          onTrim={handleTrim}
-          onTrimEnd={handleTrimEnd}
+          onTrim={handleTrimCommit}
           onReorder={handleReorder}
           onAddMedia={handleAddMedia}
           playbackSv={playbackSv}

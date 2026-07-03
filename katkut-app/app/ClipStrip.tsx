@@ -7,12 +7,14 @@ import Animated, {
   useSharedValue,
   SharedValue,
   scrollTo,
+  withSpring,
+  withTiming,
   runOnJS,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import { Plus, Trash2, VolumeX, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { Edl } from '../core';
+import { Edl, TimelineItem } from '../core';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -39,11 +41,14 @@ const MAX_PHOTO_SEC = 10;
 // reveals more tiles instead of zooming a single stretched image.
 const THUMB_TILE_W = 44;
 const GAP = 2;
+const MIN_CLIP_W = 52;
 const LONG_PRESS_MS = 180;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.5;
 const RULER_H = 22;
 const ADD_BTN_W = 52;
+
+const SHIFT_SPRING = { damping: 22, stiffness: 240, mass: 0.6 };
 
 export interface ClipStripProps {
   timeline: Edl['timeline'];
@@ -54,12 +59,11 @@ export interface ClipStripProps {
   onSelect: (index: number) => void;
   onToggleMute: (index: number) => void;
   onDelete: (index: number) => void;
-  /** a trim drag began on clip `index` (start one history transaction) */
-  onTrimStart?: (index: number) => void;
-  /** continuous trim updates during the drag (transient — not history steps) */
+  /**
+   * A trim drag COMMITTED (fired once, on release — never per frame). During the drag the strip
+   * animates entirely on the UI thread; React state is untouched until this fires.
+   */
   onTrim: (index: number, newIn: number, newOut: number) => void;
-  /** the trim drag ended (close the history transaction with ONE undo step) */
-  onTrimEnd?: (index: number) => void;
   onReorder: (from: number, to: number) => void;
   onAddMedia: () => void;
   /** Current playback position (seconds) as a shared value — drives the strip on the UI thread. */
@@ -68,36 +72,252 @@ export interface ClipStripProps {
   onScrubStart?: () => void;
 }
 
-// ---- Sub-component so useAnimatedStyle is called at the top level of a component, not inside
-// a .map() loop — which would violate the Rules of Hooks and crash the app.
-function AnimatedClip({
-  index,
-  isSelected,
-  widthsSv,
-  translatesSv,
-  dragActiveSv,
-  children,
-}: {
+// ─── One clip row ─────────────────────────────────────────────────────────────
+// Owns its width shared value and its gestures, so gesture-frame work never touches React and a
+// re-render of the strip doesn't recreate every clip's gesture objects (the row is memoized).
+interface ClipItemProps {
+  item: TimelineItem;
   index: number;
   isSelected: boolean;
-  widthsSv: SharedValue<number[]>;
-  translatesSv: SharedValue<number[]>;
+  handlesEnabled: boolean;
+  pxPerSec: number;
+  /** source clip length (already MAX_PHOTO_SEC for photos) */
+  maxOutSec: number;
+  thumbUri: string | undefined;
+  /** committed widths/offsets of every clip (plain arrays — captured by worklets) */
+  widthsPx: number[];
+  offsetsPx: number[];
   dragActiveSv: SharedValue<number>;
-  children: React.ReactNode;
-}) {
-  const animStyle = useAnimatedStyle(() => ({
-    width: widthsSv.value[index] ?? 52,
-    transform: [{ translateX: translatesSv.value[index] ?? 0 }],
-    zIndex: dragActiveSv.value === index ? 100 : isSelected ? 50 : 1,
-  }));
-  return (
-    <Animated.View style={[styles.clipBlock, animStyle]}>
-      {children}
-    </Animated.View>
-  );
+  dragXSv: SharedValue<number>;
+  dragTargetSv: SharedValue<number>;
+  onSelect: (index: number) => void;
+  onToggleMute: (index: number) => void;
+  onDelete: (index: number) => void;
+  onTrimCommit: (index: number, newIn: number, newOut: number) => void;
+  onReorder: (from: number, to: number) => void;
 }
 
-export default function ClipStrip({
+const ClipItem = React.memo(function ClipItem({
+  item,
+  index,
+  isSelected,
+  handlesEnabled,
+  pxPerSec,
+  maxOutSec,
+  thumbUri,
+  widthsPx,
+  offsetsPx,
+  dragActiveSv,
+  dragXSv,
+  dragTargetSv,
+  onSelect,
+  onToggleMute,
+  onDelete,
+  onTrimCommit,
+  onReorder,
+}: ClipItemProps) {
+  // Committed in/out — plain numbers captured by the trim worklets. Safe because nothing
+  // re-renders mid-drag (commits happen only on release), so these can't change under a gesture.
+  const baseIn = item.in;
+  const baseOut = item.out;
+
+  const widthSv = useSharedValue(Math.max(MIN_CLIP_W, (baseOut - baseIn) * pxPerSec));
+  // Sync width when the committed trim or zoom changes (covers undo/redo too).
+  useEffect(() => {
+    widthSv.value = withTiming(Math.max(MIN_CLIP_W, (baseOut - baseIn) * pxPerSec), { duration: 160 });
+  }, [baseIn, baseOut, pxPerSec, widthSv]);
+
+  // Live trim values, written by the UI-thread worklets and read once on release for the commit.
+  const trimInSv = useSharedValue(baseIn);
+  const trimOutSv = useSharedValue(baseOut);
+
+  const commitLeft = useCallback((newIn: number) => {
+    hapticLight();
+    if (Math.abs(newIn - baseIn) > 1e-4) onTrimCommit(index, newIn, baseOut);
+  }, [index, baseIn, baseOut, onTrimCommit]);
+
+  const commitRight = useCallback((newOut: number) => {
+    hapticLight();
+    if (Math.abs(newOut - baseOut) > 1e-4) onTrimCommit(index, baseIn, newOut);
+  }, [index, baseIn, baseOut, onTrimCommit]);
+
+  // Trim gestures: width follows the finger ON THE UI THREAD; JS is involved exactly once (commit).
+  const trimLeftGesture = Gesture.Pan()
+    .enabled(handlesEnabled && isSelected)
+    .onStart(() => {
+      trimInSv.value = baseIn;
+      runOnJS(hapticLight)();
+    })
+    .onUpdate((e) => {
+      const newIn = Math.max(0, Math.min(baseOut - MIN_LEN_SEC, baseIn + e.translationX / pxPerSec));
+      trimInSv.value = newIn;
+      widthSv.value = Math.max(MIN_CLIP_W, (baseOut - newIn) * pxPerSec);
+    })
+    .onEnd(() => {
+      runOnJS(commitLeft)(trimInSv.value);
+    });
+
+  const trimRightGesture = Gesture.Pan()
+    .enabled(handlesEnabled && isSelected)
+    .onStart(() => {
+      trimOutSv.value = baseOut;
+      runOnJS(hapticLight)();
+    })
+    .onUpdate((e) => {
+      const newOut = Math.min(maxOutSec, Math.max(baseIn + MIN_LEN_SEC, baseOut + e.translationX / pxPerSec));
+      trimOutSv.value = newOut;
+      widthSv.value = Math.max(MIN_CLIP_W, (newOut - baseIn) * pxPerSec);
+    })
+    .onEnd(() => {
+      runOnJS(commitRight)(trimOutSv.value);
+    });
+
+  // Long-press drag reorder: the dragged clip follows the finger raw; the target slot is computed
+  // in the same worklet from the committed layout. Other clips spring aside via their own
+  // animated styles reacting to dragActive/dragTarget.
+  const dragGesture = Gesture.Pan()
+    .activateAfterLongPress(LONG_PRESS_MS)
+    .onStart(() => {
+      dragActiveSv.value = index;
+      dragTargetSv.value = index;
+      dragXSv.value = 0;
+      runOnJS(hapticMedium)();
+    })
+    .onUpdate((e) => {
+      dragXSv.value = e.translationX;
+      const center = offsetsPx[index] + e.translationX + widthsPx[index] / 2;
+      let target = widthsPx.length - 1;
+      let acc = 0;
+      for (let i = 0; i < widthsPx.length; i++) {
+        const cellEnd = acc + widthsPx[i] + GAP;
+        if (center < cellEnd) {
+          target = i;
+          break;
+        }
+        acc = cellEnd;
+      }
+      dragTargetSv.value = target;
+    })
+    .onEnd(() => {
+      const from = dragActiveSv.value;
+      const to = dragTargetSv.value;
+      dragActiveSv.value = -1;
+      dragXSv.value = 0;
+      if (from >= 0 && to !== from) {
+        runOnJS(hapticMedium)();
+        runOnJS(onReorder)(from, to);
+      }
+    });
+
+  const animStyle = useAnimatedStyle(() => {
+    const from = dragActiveSv.value;
+    const isDragged = from === index;
+    let translateX;
+    if (isDragged) {
+      translateX = dragXSv.value; // raw finger-follow, no spring lag
+    } else if (from >= 0) {
+      const to = dragTargetSv.value;
+      const dw = widthsPx[from] + GAP;
+      let shift = 0;
+      if (from < to && index > from && index <= to) shift = -dw;
+      else if (from > to && index >= to && index < from) shift = dw;
+      translateX = withSpring(shift, SHIFT_SPRING); // clips glide aside to make room
+    } else {
+      translateX = withSpring(0, SHIFT_SPRING);
+    }
+    return {
+      width: widthSv.value,
+      transform: [{ translateX }],
+      zIndex: isDragged ? 100 : isSelected ? 50 : 1,
+    };
+  });
+
+  // Filmstrip tiles from the COMMITTED duration (tile count updating mid-drag would re-render;
+  // the width visual still follows the finger via widthSv).
+  const durationSec = Math.max(0, baseOut - baseIn);
+  const clipW = Math.max(MIN_CLIP_W, durationSec * pxPerSec);
+  const tileCount = Math.max(1, Math.ceil(clipW / THUMB_TILE_W));
+  const formattedDuration = durationSec >= 60
+    ? `${Math.floor(durationSec / 60)}:${String(Math.floor(durationSec % 60)).padStart(2, '0')}`
+    : `${durationSec.toFixed(1)}s`;
+
+  return (
+    <View style={styles.clipWrapper}>
+      {/* Trim handles */}
+      {isSelected && handlesEnabled && (
+        <>
+          <GestureDetector gesture={trimLeftGesture}>
+            <Animated.View style={[styles.trimHandle, styles.trimHandleLeft]}>
+              <View style={styles.trimHandleInner}>
+                <ChevronLeft size={12} color="#000" strokeWidth={3} />
+              </View>
+            </Animated.View>
+          </GestureDetector>
+          <GestureDetector gesture={trimRightGesture}>
+            <Animated.View style={[styles.trimHandle, styles.trimHandleRight]}>
+              <View style={styles.trimHandleInner}>
+                <ChevronRight size={12} color="#000" strokeWidth={3} />
+              </View>
+            </Animated.View>
+          </GestureDetector>
+        </>
+      )}
+
+      <GestureDetector gesture={dragGesture}>
+        <Animated.View style={[styles.clipBlock, animStyle]}>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              onSelect(index);
+            }}
+            style={[styles.clipInner, isSelected && styles.clipInnerSelected]}
+          >
+            {thumbUri ? (
+              <View style={styles.filmstrip} pointerEvents="none">
+                {Array.from({ length: tileCount }).map((_, k) => (
+                  <Image key={k} source={{ uri: thumbUri }} style={styles.filmTile} fadeDuration={0} />
+                ))}
+              </View>
+            ) : (
+              <View style={styles.clipPlaceholder} />
+            )}
+
+            {/* Bottom duration */}
+            <View style={styles.bottomBar}>
+              <Text style={styles.durationLabel} numberOfLines={1}>
+                {formattedDuration}
+              </Text>
+            </View>
+
+            {/* Mute/delete controls */}
+            <View style={styles.topRow}>
+              {item.muted && (
+                <Pressable hitSlop={6} onPress={() => onToggleMute(index)} style={styles.topBadge}>
+                  <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
+                </Pressable>
+              )}
+              {isSelected && handlesEnabled && (
+                <Pressable
+                  hitSlop={6}
+                  onPress={() => {
+                    hapticMedium();
+                    onDelete(index);
+                  }}
+                  style={[styles.topBadge, styles.deleteBadge]}
+                >
+                  <Trash2 size={10} color="#FFF" strokeWidth={2.5} />
+                </Pressable>
+              )}
+            </View>
+          </Pressable>
+        </Animated.View>
+      </GestureDetector>
+    </View>
+  );
+});
+
+// ─── The strip ────────────────────────────────────────────────────────────────
+function ClipStrip({
   timeline,
   selectedIndex,
   thumbs,
@@ -106,9 +326,7 @@ export default function ClipStrip({
   onSelect,
   onToggleMute,
   onDelete,
-  onTrimStart,
   onTrim,
-  onTrimEnd,
   onReorder,
   onAddMedia,
   playbackSv,
@@ -119,60 +337,62 @@ export default function ClipStrip({
   const [stripWidth, setStripWidth] = useState(SCREEN_WIDTH);
   const [zoom, setZoom] = useState(1);
   const zoomStartRef = useRef(1);
+  const lastZoomTsRef = useRef(0);
   const userScrubbingRef = useRef(false);
   const scrubEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pxPerSec = PX_PER_SEC * zoom;
   const padStart = stripWidth / 2;
 
-  // ---- Shared values stored as arrays so useSharedValue is only ever called at the top
-  // level of the component — never inside a function or loop (Rules of Hooks).
-  const clipWidthsSv = useSharedValue<number[]>(
-    timeline.map(item => Math.max(52, Math.max(0, item.out - item.in) * PX_PER_SEC)),
-  );
-  const clipTranslatesSv = useSharedValue<number[]>(timeline.map(() => 0));
-  const dragActive = useSharedValue(-1);
-  const dragStartX = useSharedValue(0);
-  const dragCurrentX = useSharedValue(0);
+  // Cross-clip drag coordination (read by every ClipItem's animated style).
+  const dragActiveSv = useSharedValue(-1);
+  const dragXSv = useSharedValue(0);
+  const dragTargetSv = useSharedValue(-1);
 
-  // Precomputed clip layout + a scrubbing flag, read by the UI-thread scroll driver worklet.
+  // Committed layout as plain arrays — captured by the drag worklets and cheap to recompute.
+  const widthsPx = useMemo(
+    () => timeline.map((t) => Math.max(MIN_CLIP_W, Math.max(0, t.out - t.in) * pxPerSec)),
+    [timeline, pxPerSec],
+  );
+  const offsetsPx = useMemo(() => {
+    let acc = 0;
+    return widthsPx.map((w) => {
+      const o = acc;
+      acc += w + GAP;
+      return o;
+    });
+  }, [widthsPx]);
+
+  // Precomputed layout + scrubbing flag for the UI-thread scroll driver worklet.
   const layoutSv = useSharedValue<ClipLayout[]>([]);
   const scrubbingSv = useSharedValue(false);
 
-  // Sync widths when timeline or zoom changes.
   useEffect(() => {
-    clipWidthsSv.value = timeline.map(item => {
-      const len = Math.max(0, item.out - item.in);
-      return Math.max(52, len * pxPerSec);
+    let offsetPx = padStart;
+    let startSec = 0;
+    layoutSv.value = timeline.map((item, i) => {
+      const durSec = Math.max(0, item.out - item.in);
+      const widthPx = widthsPx[i];
+      const entry: ClipLayout = { startSec, durSec, offsetPx, widthPx };
+      startSec += durSec;
+      offsetPx += widthPx + GAP;
+      return entry;
     });
-  }, [timeline, pxPerSec]);
+  }, [timeline, widthsPx, padStart, layoutSv]);
 
-  // Keep the translates array length in sync with the timeline.
-  useEffect(() => {
-    if (clipTranslatesSv.value.length !== timeline.length) {
-      clipTranslatesSv.value = timeline.map(() => 0);
-    }
-  }, [timeline.length]);
+  const totalDuration = useMemo(
+    () => timeline.reduce((sum, t) => sum + Math.max(0, t.out - t.in), 0),
+    [timeline],
+  );
 
-  // compute total duration
-  const totalDuration = useMemo(() => {
-    return timeline.reduce((sum, t) => sum + Math.max(0, t.out - t.in), 0);
-  }, [timeline]);
-
-  // ruler ticks
   const rulerTicks = useMemo(() => {
     const ticks: number[] = [];
     const interval = zoom < 1 ? 10 : zoom < 2 ? 5 : 1;
-    for (let s = 0; s <= Math.ceil(totalDuration); s += interval) {
-      ticks.push(s);
-    }
+    for (let s = 0; s <= Math.ceil(totalDuration); s += interval) ticks.push(s);
     return ticks;
   }, [totalDuration, zoom]);
 
-  // Scroll-center pixel → timeline seconds. Inverse of the scroll driver's mapping, using the SAME
-  // cumulative layout (offsetPx already includes every preceding clip's width + gaps). The old
-  // version forgot the preceding widths, so any scroll ran off the end and returned total duration —
-  // which made scrubbing jump straight to the last clip.
+  // Scroll-center pixel → timeline seconds (inverse of the scroll driver's mapping).
   const timeAtPixel = useCallback((px: number) => {
     const layout = layoutSv.value;
     if (layout.length === 0) return 0;
@@ -186,28 +406,10 @@ export default function ClipStrip({
     return 0;
   }, [layoutSv]);
 
-  // Precompute each clip's start-time + pixel offset so the scroll worklet can map seconds → pixels
-  // without walking React state. Rebuilt only when the timeline, zoom, or width actually change.
-  useEffect(() => {
-    let offsetPx = padStart;
-    let startSec = 0;
-    layoutSv.value = timeline.map((item) => {
-      const durSec = Math.max(0, item.out - item.in);
-      const widthPx = Math.max(52, durSec * pxPerSec);
-      const entry: ClipLayout = { startSec, durSec, offsetPx, widthPx };
-      startSec += durSec;
-      offsetPx += widthPx + GAP;
-      return entry;
-    });
-  }, [timeline, pxPerSec, padStart]);
-
-  // UI-thread playhead driver: maps the (interpolated) playback second → a scroll offset and drives
-  // the ScrollView every frame via Reanimated's scrollTo worklet. Because playbackSv glides between
-  // the native player's 100ms samples, the strip scrolls smoothly at 60fps and stays synced to the
-  // video — no JS round-trips, no fighting animated scrollTo calls. Yields while the user scrubs.
+  // UI-thread playhead driver: playback second → scroll offset, every frame, no JS round-trips.
   useDerivedValue(() => {
     const layout = layoutSv.value;
-    if (scrubbingSv.value || layout.length === 0) return;
+    if (scrubbingSv.value || dragActiveSv.value >= 0 || layout.length === 0) return;
     const sec = playbackSv.value;
     let px = padStart;
     for (let i = 0; i < layout.length; i++) {
@@ -228,8 +430,7 @@ export default function ClipStrip({
     onScrub(timeAtPixel(centerPx));
   }, [stripWidth, timeAtPixel, onScrub]);
 
-  // Scrubbing = the user owns the scroll; the UI-thread driver must fully yield until the strip
-  // settles (finger up AND momentum finished), otherwise it snaps back to the playback position.
+  // Scrubbing = the user owns the scroll until the strip settles (finger up AND momentum done).
   const beginScrub = useCallback(() => {
     if (scrubEndTimer.current) { clearTimeout(scrubEndTimer.current); scrubEndTimer.current = null; }
     userScrubbingRef.current = true;
@@ -243,7 +444,6 @@ export default function ClipStrip({
   }, [scrubbingSv]);
 
   const onEndDrag = useCallback(() => {
-    // finger lifted — end scrubbing unless momentum takes over within a moment
     if (scrubEndTimer.current) clearTimeout(scrubEndTimer.current);
     scrubEndTimer.current = setTimeout(endScrub, 80);
   }, [endScrub]);
@@ -256,129 +456,20 @@ export default function ClipStrip({
     if (scrubEndTimer.current) clearTimeout(scrubEndTimer.current);
   }, []);
 
-  // Pinch zoom
+  // Pinch zoom — runs on JS (it re-layouts React anyway) but throttled to ~30fps so a 120Hz
+  // pinch doesn't trigger 120 re-layouts a second.
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => { zoomStartRef.current = zoom; })
+    .runOnJS(true)
+    .onStart(() => {
+      zoomStartRef.current = zoom;
+    })
     .onUpdate((e) => {
+      const now = Date.now();
+      if (now - lastZoomTsRef.current < 32) return;
+      lastZoomTsRef.current = now;
       const newZoom = zoomStartRef.current * e.scale;
-      runOnJS(setZoom)(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom)));
+      setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom)));
     });
-
-  // ---- DRAG REORDER LOGIC ----
-  const startDrag = useCallback((index: number) => {
-    dragActive.value = index;
-    dragStartX.value = clipTranslatesSv.value[index] ?? 0;
-  }, [clipTranslatesSv]);
-
-  const updateDrag = useCallback((translationX: number) => {
-    const idx = dragActive.value;
-    if (idx < 0) return;
-    dragCurrentX.value = translationX;
-    const newX = dragStartX.value + translationX;
-
-    const widths = clipWidthsSv.value;
-    const draggedWidth = widths[idx] ?? 0;
-    const draggedCenter = newX + draggedWidth / 2;
-
-    let targetIdx = idx;
-    let minDist = Infinity;
-    for (let i = 0; i < timeline.length; i++) {
-      const w = widths[i] ?? 0;
-      const currentTranslate = clipTranslatesSv.value[i] ?? 0;
-      const center = i === idx ? draggedCenter : currentTranslate + w / 2;
-      const dist = Math.abs(center - draggedCenter);
-      if (dist < minDist && i !== idx) {
-        minDist = dist;
-        targetIdx = i;
-      }
-    }
-
-    const newTranslates = [...clipTranslatesSv.value];
-    newTranslates[idx] = newX;
-    for (let i = 0; i < timeline.length; i++) {
-      if (i === idx) continue;
-      if (i < targetIdx && i >= idx) newTranslates[i] = -draggedWidth - GAP;
-      else if (i > targetIdx && i <= idx) newTranslates[i] = draggedWidth + GAP;
-      else newTranslates[i] = 0;
-    }
-    clipTranslatesSv.value = newTranslates;
-  }, [timeline, clipWidthsSv, clipTranslatesSv]);
-
-  const endDrag = useCallback(() => {
-    const idx = dragActive.value;
-    if (idx < 0) return;
-    const widths = clipWidthsSv.value;
-    const currentX = clipTranslatesSv.value[idx] ?? 0;
-    const draggedWidth = widths[idx] ?? 0;
-    const draggedCenter = currentX + draggedWidth / 2;
-
-    let targetIdx = idx;
-    let minDist = Infinity;
-    for (let i = 0; i < timeline.length; i++) {
-      const w = widths[i] ?? 0;
-      const currentTranslate = clipTranslatesSv.value[i] ?? 0;
-      const center = i === idx ? draggedCenter : currentTranslate + w / 2;
-      const dist = Math.abs(center - draggedCenter);
-      if (dist < minDist && i !== idx) {
-        minDist = dist;
-        targetIdx = i;
-      }
-    }
-
-    clipTranslatesSv.value = timeline.map(() => 0);
-    dragActive.value = -1;
-    if (targetIdx !== idx) {
-      hapticMedium();
-      onReorder(idx, targetIdx);
-    }
-  }, [onReorder, timeline, clipWidthsSv, clipTranslatesSv]);
-
-  // ---- TRIM LOGIC ----
-  // The clip's in/out captured at drag START. translationX is cumulative from the gesture start,
-  // so deltas must apply to this fixed base — applying them to the live (already-trimmed) item
-  // would compound each tick and make the trim accelerate.
-  const trimBaseRef = useRef<{ in: number; out: number } | null>(null);
-
-  const startTrim = useCallback((index: number) => {
-    const item = timeline[index];
-    trimBaseRef.current = item ? { in: item.in, out: item.out } : null;
-    hapticLight();
-    onTrimStart?.(index);
-  }, [timeline, onTrimStart]);
-
-  const finishTrim = useCallback((index: number) => {
-    trimBaseRef.current = null;
-    hapticLight();
-    onTrimEnd?.(index);
-  }, [onTrimEnd]);
-
-  const trimLeft = useCallback((index: number, translationX: number) => {
-    const base = trimBaseRef.current ?? timeline[index];
-    if (!base) return;
-    const deltaSec = translationX / pxPerSec;
-    const newIn = Math.max(0, Math.min(base.out - MIN_LEN_SEC, base.in + deltaSec));
-    const newWidth = Math.max(52, (base.out - newIn) * pxPerSec);
-    const newWidths = [...clipWidthsSv.value];
-    newWidths[index] = newWidth;
-    clipWidthsSv.value = newWidths;
-    onTrim(index, newIn, base.out);
-  }, [timeline, pxPerSec, onTrim, clipWidthsSv]);
-
-  const trimRight = useCallback((index: number, translationX: number) => {
-    const item = timeline[index];
-    const base = trimBaseRef.current ?? item;
-    if (!item || !base) return;
-    // A photo is a still with no source footage — let it stretch up to MAX_PHOTO_SEC. Videos are
-    // capped at their actual source duration.
-    const sourceDur = item.kind === 'photo' ? MAX_PHOTO_SEC : (durationByClipId.get(item.clipId) ?? base.out);
-    const deltaSec = translationX / pxPerSec;
-    const newOut = Math.min(sourceDur, Math.max(base.in + MIN_LEN_SEC, base.out + deltaSec));
-    const newWidth = Math.max(52, (newOut - base.in) * pxPerSec);
-    const newWidths = [...clipWidthsSv.value];
-    newWidths[index] = newWidth;
-    clipWidthsSv.value = newWidths;
-    onTrim(index, base.in, newOut);
-  }, [timeline, durationByClipId, pxPerSec, onTrim, clipWidthsSv]);
 
   return (
     <View
@@ -387,20 +478,6 @@ export default function ClipStrip({
     >
       <GestureDetector gesture={pinchGesture}>
         <View style={styles.stripArea}>
-          {/* Ruler */}
-          <View style={styles.ruler}>
-            {rulerTicks.map((s) => (
-              <View key={`t-${s}`} style={[styles.tick, { left: s * pxPerSec }]} pointerEvents="none">
-                <View style={s % 10 === 0 ? styles.tickMajor : styles.tickMinor} />
-                {s % 10 === 0 && (
-                  <Text style={styles.tickText}>
-                    {s >= 60 ? `${Math.floor(s / 60)}m` : `${s}s`}
-                  </Text>
-                )}
-              </View>
-            ))}
-          </View>
-
           <AnimatedScrollView
             ref={scrollRef}
             horizontal
@@ -413,131 +490,51 @@ export default function ClipStrip({
             scrollEventThrottle={16}
             contentContainerStyle={styles.scrollInner}
           >
+            {/* Ruler — INSIDE the scroll content so ticks track the clips (offset by padStart). */}
+            <View
+              style={[styles.ruler, { left: padStart, width: totalDuration * pxPerSec + 60 }]}
+              pointerEvents="none"
+            >
+              {rulerTicks.map((s) => (
+                <View key={`t-${s}`} style={[styles.tick, { left: s * pxPerSec }]}>
+                  <View style={s % 10 === 0 ? styles.tickMajor : styles.tickMinor} />
+                  {s % 10 === 0 && (
+                    <Text style={styles.tickText}>
+                      {s >= 60 ? `${Math.floor(s / 60)}m` : `${s}s`}
+                    </Text>
+                  )}
+                </View>
+              ))}
+            </View>
+
             <View style={{ width: padStart }} />
             <View style={styles.clipsRow}>
-              {timeline.map((item, i) => {
-                const isSelected = i === selectedIndex;
-                const thumbUri = thumbs[item.clipId];
-
-                // Drag gesture
-                const dragGesture = Gesture.Pan()
-                  .activateAfterLongPress(LONG_PRESS_MS)
-                  .onStart(() => {
-                    runOnJS(startDrag)(i);
-                    runOnJS(hapticMedium)();
-                  })
-                  .onUpdate((e) => {
-                    runOnJS(updateDrag)(e.translationX);
-                  })
-                  .onEnd(() => {
-                    runOnJS(endDrag)();
-                  });
-
-                // Trim gestures — start/finish open and close ONE history transaction
-                const trimLeftGesture = Gesture.Pan()
-                  .enabled(handlesEnabled && isSelected)
-                  .onStart(() => runOnJS(startTrim)(i))
-                  .onUpdate((e) => runOnJS(trimLeft)(i, e.translationX))
-                  .onEnd(() => runOnJS(finishTrim)(i));
-
-                const trimRightGesture = Gesture.Pan()
-                  .enabled(handlesEnabled && isSelected)
-                  .onStart(() => runOnJS(startTrim)(i))
-                  .onUpdate((e) => runOnJS(trimRight)(i, e.translationX))
-                  .onEnd(() => runOnJS(finishTrim)(i));
-
-                const durationSec = Math.max(0, item.out - item.in);
-                const formattedDuration = durationSec >= 60
-                  ? `${Math.floor(durationSec / 60)}:${String(Math.floor(durationSec % 60)).padStart(2, '0')}`
-                  : `${durationSec.toFixed(1)}s`;
-
-                // Filmstrip: fixed-width tiles of the same thumbnail, so widening the clip reveals
-                // more tiles instead of zooming one stretched image. Count from the settled width.
-                const clipW = Math.max(52, durationSec * pxPerSec);
-                const tileCount = Math.max(1, Math.ceil(clipW / THUMB_TILE_W));
-
-                return (
-                  <View key={`${item.clipId}-${i}`} style={styles.clipWrapper}>
-                    {/* Trim handles */}
-                    {isSelected && handlesEnabled && (
-                      <>
-                        <GestureDetector gesture={trimLeftGesture}>
-                          <Animated.View style={[styles.trimHandle, styles.trimHandleLeft]}>
-                            <View style={styles.trimHandleInner}>
-                              <ChevronLeft size={12} color="#000" strokeWidth={3} />
-                            </View>
-                          </Animated.View>
-                        </GestureDetector>
-                        <GestureDetector gesture={trimRightGesture}>
-                          <Animated.View style={[styles.trimHandle, styles.trimHandleRight]}>
-                            <View style={styles.trimHandleInner}>
-                              <ChevronRight size={12} color="#000" strokeWidth={3} />
-                            </View>
-                          </Animated.View>
-                        </GestureDetector>
-                      </>
-                    )}
-
-                    <GestureDetector gesture={dragGesture}>
-                      {/* AnimatedClip is a sub-component so useAnimatedStyle runs at the top
-                          level of that component — not inside this .map() loop. */}
-                      <AnimatedClip
-                        index={i}
-                        isSelected={isSelected}
-                        widthsSv={clipWidthsSv}
-                        translatesSv={clipTranslatesSv}
-                        dragActiveSv={dragActive}
-                      >
-                        <Pressable
-                          onPress={() => {
-                            hapticLight();
-                            onSelect(i);
-                          }}
-                          style={[styles.clipInner, isSelected && styles.clipInnerSelected]}
-                        >
-                          {thumbUri ? (
-                            <View style={styles.filmstrip} pointerEvents="none">
-                              {Array.from({ length: tileCount }).map((_, k) => (
-                                <Image key={k} source={{ uri: thumbUri }} style={styles.filmTile} />
-                              ))}
-                            </View>
-                          ) : (
-                            <View style={styles.clipPlaceholder} />
-                          )}
-
-                          {/* Bottom duration */}
-                          <View style={styles.bottomBar}>
-                            <Text style={styles.durationLabel} numberOfLines={1}>
-                              {formattedDuration}
-                            </Text>
-                          </View>
-
-                          {/* Mute/delete controls */}
-                          <View style={styles.topRow}>
-                            {item.muted && (
-                              <Pressable hitSlop={6} onPress={() => onToggleMute(i)} style={styles.topBadge}>
-                                <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
-                              </Pressable>
-                            )}
-                            {isSelected && handlesEnabled && (
-                              <Pressable
-                                hitSlop={6}
-                                onPress={() => {
-                                  hapticMedium();
-                                  onDelete(i);
-                                }}
-                                style={[styles.topBadge, styles.deleteBadge]}
-                              >
-                                <Trash2 size={10} color="#FFF" strokeWidth={2.5} />
-                              </Pressable>
-                            )}
-                          </View>
-                        </Pressable>
-                      </AnimatedClip>
-                    </GestureDetector>
-                  </View>
-                );
-              })}
+              {timeline.map((item, i) => (
+                <ClipItem
+                  key={`${item.clipId}-${i}`}
+                  item={item}
+                  index={i}
+                  isSelected={i === selectedIndex}
+                  handlesEnabled={handlesEnabled}
+                  pxPerSec={pxPerSec}
+                  maxOutSec={
+                    item.kind === 'photo'
+                      ? MAX_PHOTO_SEC
+                      : durationByClipId.get(item.clipId) ?? item.out
+                  }
+                  thumbUri={thumbs[item.clipId]}
+                  widthsPx={widthsPx}
+                  offsetsPx={offsetsPx}
+                  dragActiveSv={dragActiveSv}
+                  dragXSv={dragXSv}
+                  dragTargetSv={dragTargetSv}
+                  onSelect={onSelect}
+                  onToggleMute={onToggleMute}
+                  onDelete={onDelete}
+                  onTrimCommit={onTrim}
+                  onReorder={onReorder}
+                />
+              ))}
 
               <Pressable style={styles.addBtn} onPress={onAddMedia}>
                 <Plus size={20} color="#8E8E93" strokeWidth={2} />
@@ -557,6 +554,9 @@ export default function ClipStrip({
   );
 }
 
+// Memoized so EditorScreen re-renders (timecode/selection ticks) don't rebuild the whole strip.
+export default React.memo(ClipStrip);
+
 const styles = StyleSheet.create({
   container: {
     backgroundColor: '#0A0A0B',
@@ -569,8 +569,6 @@ const styles = StyleSheet.create({
   ruler: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    right: 0,
     height: RULER_H,
     zIndex: 2,
   },
