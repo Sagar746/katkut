@@ -54,7 +54,12 @@ export interface ClipStripProps {
   onSelect: (index: number) => void;
   onToggleMute: (index: number) => void;
   onDelete: (index: number) => void;
+  /** a trim drag began on clip `index` (start one history transaction) */
+  onTrimStart?: (index: number) => void;
+  /** continuous trim updates during the drag (transient — not history steps) */
   onTrim: (index: number, newIn: number, newOut: number) => void;
+  /** the trim drag ended (close the history transaction with ONE undo step) */
+  onTrimEnd?: (index: number) => void;
   onReorder: (from: number, to: number) => void;
   onAddMedia: () => void;
   /** Current playback position (seconds) as a shared value — drives the strip on the UI thread. */
@@ -101,7 +106,9 @@ export default function ClipStrip({
   onSelect,
   onToggleMute,
   onDelete,
+  onTrimStart,
   onTrim,
+  onTrimEnd,
   onReorder,
   onAddMedia,
   playbackSv,
@@ -327,29 +334,50 @@ export default function ClipStrip({
   }, [onReorder, timeline, clipWidthsSv, clipTranslatesSv]);
 
   // ---- TRIM LOGIC ----
-  const trimLeft = useCallback((index: number, translationX: number) => {
+  // The clip's in/out captured at drag START. translationX is cumulative from the gesture start,
+  // so deltas must apply to this fixed base — applying them to the live (already-trimmed) item
+  // would compound each tick and make the trim accelerate.
+  const trimBaseRef = useRef<{ in: number; out: number } | null>(null);
+
+  const startTrim = useCallback((index: number) => {
     const item = timeline[index];
+    trimBaseRef.current = item ? { in: item.in, out: item.out } : null;
+    hapticLight();
+    onTrimStart?.(index);
+  }, [timeline, onTrimStart]);
+
+  const finishTrim = useCallback((index: number) => {
+    trimBaseRef.current = null;
+    hapticLight();
+    onTrimEnd?.(index);
+  }, [onTrimEnd]);
+
+  const trimLeft = useCallback((index: number, translationX: number) => {
+    const base = trimBaseRef.current ?? timeline[index];
+    if (!base) return;
     const deltaSec = translationX / pxPerSec;
-    const newIn = Math.max(0, Math.min(item.out - MIN_LEN_SEC, item.in + deltaSec));
-    const newWidth = Math.max(52, (item.out - newIn) * pxPerSec);
+    const newIn = Math.max(0, Math.min(base.out - MIN_LEN_SEC, base.in + deltaSec));
+    const newWidth = Math.max(52, (base.out - newIn) * pxPerSec);
     const newWidths = [...clipWidthsSv.value];
     newWidths[index] = newWidth;
     clipWidthsSv.value = newWidths;
-    onTrim(index, newIn, item.out);
+    onTrim(index, newIn, base.out);
   }, [timeline, pxPerSec, onTrim, clipWidthsSv]);
 
   const trimRight = useCallback((index: number, translationX: number) => {
     const item = timeline[index];
+    const base = trimBaseRef.current ?? item;
+    if (!item || !base) return;
     // A photo is a still with no source footage — let it stretch up to MAX_PHOTO_SEC. Videos are
     // capped at their actual source duration.
-    const sourceDur = item.kind === 'photo' ? MAX_PHOTO_SEC : (durationByClipId.get(item.clipId) ?? item.out);
+    const sourceDur = item.kind === 'photo' ? MAX_PHOTO_SEC : (durationByClipId.get(item.clipId) ?? base.out);
     const deltaSec = translationX / pxPerSec;
-    const newOut = Math.min(sourceDur, Math.max(item.in + MIN_LEN_SEC, item.out + deltaSec));
-    const newWidth = Math.max(52, (newOut - item.in) * pxPerSec);
+    const newOut = Math.min(sourceDur, Math.max(base.in + MIN_LEN_SEC, base.out + deltaSec));
+    const newWidth = Math.max(52, (newOut - base.in) * pxPerSec);
     const newWidths = [...clipWidthsSv.value];
     newWidths[index] = newWidth;
     clipWidthsSv.value = newWidths;
-    onTrim(index, item.in, newOut);
+    onTrim(index, base.in, newOut);
   }, [timeline, durationByClipId, pxPerSec, onTrim, clipWidthsSv]);
 
   return (
@@ -405,18 +433,18 @@ export default function ClipStrip({
                     runOnJS(endDrag)();
                   });
 
-                // Trim gestures
+                // Trim gestures — start/finish open and close ONE history transaction
                 const trimLeftGesture = Gesture.Pan()
                   .enabled(handlesEnabled && isSelected)
-                  .onStart(() => runOnJS(hapticLight)())
+                  .onStart(() => runOnJS(startTrim)(i))
                   .onUpdate((e) => runOnJS(trimLeft)(i, e.translationX))
-                  .onEnd(() => runOnJS(hapticLight)());
+                  .onEnd(() => runOnJS(finishTrim)(i));
 
                 const trimRightGesture = Gesture.Pan()
                   .enabled(handlesEnabled && isSelected)
-                  .onStart(() => runOnJS(hapticLight)())
+                  .onStart(() => runOnJS(startTrim)(i))
                   .onUpdate((e) => runOnJS(trimRight)(i, e.translationX))
-                  .onEnd(() => runOnJS(hapticLight)());
+                  .onEnd(() => runOnJS(finishTrim)(i));
 
                 const durationSec = Math.max(0, item.out - item.in);
                 const formattedDuration = durationSec >= 60

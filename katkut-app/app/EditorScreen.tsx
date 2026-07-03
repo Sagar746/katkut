@@ -45,7 +45,8 @@ function fmtTime(sec: number): string {
 
 export default function EditorScreen({ analyses, initialEdl, onBack, onExport, proxyByClipId }: EditorScreenProps) {
   const insets = useSafeAreaInsets();
-  const { edl, commit, undo, redo, canUndo, canRedo } = useEdlHistory(initialEdl);
+  const { edl, commit, setTransient, beginDrag, endDrag, undo, redo, canUndo, canRedo } =
+    useEdlHistory(initialEdl);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [progress, setProgress] = useState({ cur: 0, total: 0 });
@@ -155,13 +156,26 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     pendingSeekRef.current = { index: Math.min(index, next.timeline.length - 1), play: isPlaying };
   }
 
+  // Trim is a continuous gesture: start/update/end map to ONE history transaction
+  // (beginDrag → setTransient per tick → endDrag = a single undo step), and the preview player's
+  // EDL is frozen for the whole drag so the native playlist rebuilds once at the end — not per frame.
+  const [trimming, setTrimming] = useState(false);
+  const liveTrimEdlRef = useRef<Edl | null>(null);
+
+  function handleTrimStart() {
+    beginDrag();
+    liveTrimEdlRef.current = null;
+    setTrimming(true);
+  }
+
   function handleTrim(index: number, newIn: number, newOut: number) {
     const prevItem = edl.timeline[index];
     const timeline = edl.timeline.map((t, i) =>
       i === index ? { ...t, in: newIn, out: newOut } : t,
     );
-    commit(recomputeTargetDuration({ ...edl, timeline }));
-    pendingSeekRef.current = { index, play: false };
+    const next = recomputeTargetDuration({ ...edl, timeline });
+    liveTrimEdlRef.current = next;
+    setTransient(next); // live strip/duration updates without touching undo history
 
     // Photos bake their duration into a rendered clip, so trimming one needs a fresh preview clip.
     // Debounce to the end of the drag (trim fires continuously) to avoid re-encoding every frame.
@@ -170,6 +184,14 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
       const updated = { ...prevItem, in: newIn, out: newOut };
       photoRegenTimer.current = setTimeout(() => regenPhotoProxy(updated, index), 350);
     }
+  }
+
+  function handleTrimEnd(index: number) {
+    const final = liveTrimEdlRef.current;
+    liveTrimEdlRef.current = null;
+    setTrimming(false); // unfreezes the player EDL → one playlist rebuild
+    if (final) endDrag(final); // one undo step for the whole drag
+    pendingSeekRef.current = { index, play: false };
   }
 
   function handleReorder(from: number, to: number) {
@@ -215,6 +237,12 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     }
   }
 
+  // The preview player's EDL: held at the pre-drag value while trimming so the native playlist
+  // isn't rebuilt on every trim tick; picks up the final EDL in the same render that ends the drag.
+  const playerEdlRef = useRef(edl);
+  if (!trimming) playerEdlRef.current = edl;
+  const playerEdl = playerEdlRef.current;
+
   return (
     <View style={styles.root}>
       {/* Top Professional Header Navigation */}
@@ -234,7 +262,7 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
         <View style={styles.canvasContainer}>
           <EdlPlayer
             ref={playerRef}
-            edl={edl}
+            edl={playerEdl}
             uriByClipId={previewUriByClipId}
             fill
             loop
@@ -290,7 +318,9 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
           onSelect={handleSelect}
           onToggleMute={handleToggleMute}
           onDelete={handleDelete}
+          onTrimStart={handleTrimStart}
           onTrim={handleTrim}
+          onTrimEnd={handleTrimEnd}
           onReorder={handleReorder}
           onAddMedia={handleAddMedia}
           playbackSv={playbackSv}

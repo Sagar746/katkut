@@ -24,9 +24,10 @@ export async function renderPhotoClip(
   const motionType = (item.motion?.type ?? '') as PhotoMotionType;
   const motionAmount = item.motion?.amount ?? 0;
 
-  // Key by everything that affects the render — so a photo trimmed/extended in the editor
-  // re-renders at its new duration instead of returning the stale clip.
-  const key = `${item.clipId}_${width}x${height}_${durationSec.toFixed(2)}_${motionType}_${motionAmount}`;
+  // Key by everything that affects the render — including the SOURCE URI: clipIds (clip_01…) are
+  // reused across projects within a session, so without the uri a second project could be served
+  // the first project's rendered photo. Duration/motion keep an edited photo from reusing a stale clip.
+  const key = `${sourceUri}|${item.clipId}_${width}x${height}_${durationSec.toFixed(2)}_${motionType}_${motionAmount}`;
   const hit = clipCache.get(key);
   if (hit) return hit;
 
