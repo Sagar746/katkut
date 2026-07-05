@@ -1,6 +1,8 @@
 package com.katkut.videoassembler
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaExtractor
@@ -29,7 +31,13 @@ class Transcoder(private val context: Context) {
   private var outH = 1920
   private var bitrate = 10_000_000
 
-  fun assemble(segments: List<Segment>, outputPath: String, audioMode: String, resolution: String) {
+  fun assemble(
+    segments: List<Segment>,
+    outputPath: String,
+    audioMode: String,
+    resolution: String,
+    watermarkUri: String? = null,
+  ) {
     if (segments.isEmpty()) throw IllegalArgumentException("No segments to assemble")
 
     if (resolution == "720p") {
@@ -53,6 +61,20 @@ class Transcoder(private val context: Context) {
     val inputSurface = encoder.createInputSurface()
     val renderer = GlRenderer(inputSurface)
     renderer.setup()
+    // HARD RULE 6 (freemium): watermark every free export. Best-effort — a bad/missing asset
+    // should never break the whole export, so failures here are swallowed, not thrown.
+    if (!watermarkUri.isNullOrEmpty()) {
+      try {
+        val bitmap = loadWatermarkBitmap(watermarkUri)
+        try {
+          renderer.setWatermark(bitmap, outW, outH)
+        } finally {
+          bitmap.recycle()
+        }
+      } catch (_: Exception) {
+        // no watermark this export; everything else proceeds normally
+      }
+    }
     encoder.start()
 
     val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -185,6 +207,7 @@ class Transcoder(private val context: Context) {
               val outUsTimeline = timelineStartUs + (pts - firstPts)
               renderer.awaitNewImage()
               if (blurredFill) renderer.drawBlurredFillFrame(outW, outH) else renderer.drawFrame(outW, outH)
+              renderer.drawWatermark()
               renderer.setPresentationTime(outUsTimeline * 1000)
               renderer.swapBuffers()
               lastOutUs = outUsTimeline
@@ -234,6 +257,15 @@ class Transcoder(private val context: Context) {
         encoder.releaseOutputBuffer(outIdx, false)
         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
       }
+    }
+  }
+
+  private fun loadWatermarkBitmap(uri: String): Bitmap {
+    val parsed = Uri.parse(uri)
+    val stream = context.contentResolver.openInputStream(parsed)
+      ?: throw IllegalStateException("Cannot open watermark: $uri")
+    return stream.use {
+      BitmapFactory.decodeStream(it) ?: throw IllegalStateException("Failed to decode watermark: $uri")
     }
   }
 

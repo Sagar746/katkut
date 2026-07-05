@@ -1,7 +1,24 @@
 import { File, Paths } from 'expo-file-system';
+import { Asset } from 'expo-asset';
 import { VideoAssembler, MediaProbe, MediaProbeResult, ExportResolution } from '../native';
 import { AnalysisClip, Edl } from '../core';
 import { renderPhotoClip } from './photoClips';
+
+// Free-tier watermark (HARD RULE 6: freemium — watermark on free, Pro removes it). Resolved once
+// per session: `require()` only gives Metro's bundled module id; downloadAsync() materializes it
+// to a real local file the native encoder can open via a plain URI, same as any picked clip/photo.
+let watermarkUriPromise: Promise<string> | null = null;
+function getWatermarkUri(): Promise<string> {
+  if (!watermarkUriPromise) {
+    watermarkUriPromise = (async () => {
+      const asset = Asset.fromModule(require('../assets/katkutai_logo.png'));
+      await asset.downloadAsync();
+      if (!asset.localUri) throw new Error('Watermark asset has no local URI after download');
+      return asset.localUri;
+    })();
+  }
+  return watermarkUriPromise;
+}
 
 export interface ExportResult {
   outputPath: string;
@@ -39,8 +56,9 @@ export async function exportReel(
   }
 
   const outFile = new File(Paths.cache, `katkut_${Date.now()}.mp4`);
+  const watermarkUri = await getWatermarkUri();
   // Audio is per-clip now (no global toggle): 'smart' tells native to honor each clip's muted flag.
-  const { outputPath } = await VideoAssembler.assemble(segments, outFile.uri, 'smart', resolution);
+  const { outputPath } = await VideoAssembler.assemble(segments, outFile.uri, 'smart', resolution, watermarkUri);
   const probed = await MediaProbe.probe(outputPath);
   return { outputPath, probed };
 }

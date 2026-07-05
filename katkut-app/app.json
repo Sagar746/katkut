@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "katkut-app",
+    "name": "Katkut AI",
     "slug": "katkut-ai",
     "scheme": "katkut",
     "version": "1.0.0",
@@ -13,7 +13,7 @@
     "android": {
       "package": "com.katkut.app",
       "adaptiveIcon": {
-        "backgroundColor": "#0F0E13",
+        "backgroundColor": "#141414",
         "foregroundImage": "./assets/katkutai_app_icon.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
@@ -45,7 +45,8 @@
         }
       ],
       "expo-video",
-      "expo-font"
+      "expo-font",
+      "expo-asset"
     ]
   }
 }

@@ -15,12 +15,17 @@ export type ExportResolution = '1080p' | '720p';
 export type PhotoMotionType = 'zoomIn' | 'zoomOut' | 'panLR' | 'panRL' | '';
 
 declare class VideoAssemblerModule extends NativeModule<{}> {
-  /** Trim+concat segments → one 1080x1920 MP4 at outputPath (local filesystem path). */
+  /**
+   * Trim+concat segments → one 1080x1920 MP4 at outputPath (local filesystem path).
+   * watermarkUri (HARD RULE 6, freemium): a local image composited small in the top-right corner
+   * of every exported frame. Pass null/undefined to export with no watermark (the future Pro path).
+   */
   assemble(
     segments: AssembleSegment[],
     outputPath: string,
     audioMode: AssembleAudioMode,
     resolution: ExportResolution,
+    watermarkUri?: string | null,
   ): Promise<{ outputPath: string }>;
 
   /**

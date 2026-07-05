@@ -1,5 +1,6 @@
 package com.katkut.videoassembler
 
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -9,6 +10,7 @@ import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.os.Handler
 import android.os.HandlerThread
@@ -67,6 +69,16 @@ class GlRenderer(private val encoderSurface: Surface) {
 
   private val bgCropMatrix = FloatArray(16)
   private val fgPosMatrix = FloatArray(16)
+
+  // --- watermark additions (HARD RULE 6, freemium — free exports carry it, Pro removes it) ---
+  private var programWatermark = 0
+  private var wmAPositionLoc = 0
+  private var wmATextureCoordLoc = 0
+  private var wmUPosMatrixLoc = 0
+  private var wmUOpacityLoc = 0
+  private var watermarkTexId = 0
+  private var watermarkReady = false
+  private val watermarkPosMatrix = FloatArray(16)
 
   lateinit var surfaceTexture: SurfaceTexture
     private set
@@ -130,6 +142,12 @@ class GlRenderer(private val encoderSurface: Surface) {
     tUCropMatrixLoc = GLES20.glGetUniformLocation(program2D, "uCropMatrix")
     tUBlurStepLoc = GLES20.glGetUniformLocation(program2D, "uBlurStep")
     tUTintLoc = GLES20.glGetUniformLocation(program2D, "uTintColor")
+
+    programWatermark = buildProgram(WATERMARK_VERTEX_SHADER, WATERMARK_FRAGMENT_SHADER)
+    wmAPositionLoc = GLES20.glGetAttribLocation(programWatermark, "aPosition")
+    wmATextureCoordLoc = GLES20.glGetAttribLocation(programWatermark, "aTextureCoord")
+    wmUPosMatrixLoc = GLES20.glGetUniformLocation(programWatermark, "uPosMatrix")
+    wmUOpacityLoc = GLES20.glGetUniformLocation(programWatermark, "uOpacity")
   }
 
   /**
@@ -176,6 +194,75 @@ class GlRenderer(private val encoderSurface: Surface) {
     // (instead of the smaller dimension's texture coords being cropped away).
     if (srcAspect >= dstAspect) psy = (dstAspect / srcAspect).toFloat() else psx = (srcAspect / dstAspect).toFloat()
     Matrix.scaleM(fgPosMatrix, 0, psx, psy, 1f)
+  }
+
+  /**
+   * Upload the watermark image once and precompute its corner placement for a dstW x dstH canvas
+   * (constant for the whole export, so this runs once — not per frame). Preserves the watermark's
+   * own aspect ratio (scaled to WM_WIDTH_FRACTION of the canvas width), anchored top-right with an
+   * equal pixel margin on both edges.
+   */
+  fun setWatermark(bitmap: Bitmap, dstW: Int, dstH: Int) {
+    val tex = IntArray(1)
+    GLES20.glGenTextures(1, tex, 0)
+    watermarkTexId = tex[0]
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, watermarkTexId)
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+
+    val dstAspect = dstW.toDouble() / dstH.toDouble()
+    val bitmapAspect = bitmap.width.toDouble() / bitmap.height.toDouble()
+    val sx = WM_WIDTH_FRACTION
+    val sy = sx * dstAspect / bitmapAspect
+    // Same PIXEL margin on both edges: converting a width-relative pixel margin to each axis's
+    // own NDC scale (NDC spans 2 units per full dimension) means the Y margin needs the extra
+    // dstAspect factor, since X and Y don't share a unit scale once width != height.
+    val marginNdcX = 2.0 * WM_MARGIN_FRACTION
+    val marginNdcY = 2.0 * WM_MARGIN_FRACTION * dstAspect
+    val centerX = 1.0 - marginNdcX - sx // GL NDC: +1 is the right edge
+    val centerY = 1.0 - marginNdcY - sy // GL NDC: +1 is the TOP edge (top-right corner)
+
+    Matrix.setIdentityM(watermarkPosMatrix, 0)
+    Matrix.translateM(watermarkPosMatrix, 0, centerX.toFloat(), centerY.toFloat(), 0f)
+    Matrix.scaleM(watermarkPosMatrix, 0, sx.toFloat(), sy.toFloat(), 1f)
+
+    watermarkReady = true
+  }
+
+  /**
+   * Composite the watermark on top of whatever was just drawn (drawFrame/drawBlurredFillFrame) —
+   * a no-op if setWatermark was never called. Must run after the main frame draw, while framebuffer
+   * 0 (the encoder surface) is still bound at the full canvas viewport, which both draw paths above
+   * already leave it in.
+   */
+  fun drawWatermark() {
+    if (!watermarkReady) return
+
+    GLES20.glEnable(GLES20.GL_BLEND)
+    GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+
+    GLES20.glUseProgram(programWatermark)
+    vertexData.position(0)
+    GLES20.glEnableVertexAttribArray(wmAPositionLoc)
+    GLES20.glVertexAttribPointer(wmAPositionLoc, 2, GLES20.GL_FLOAT, false, STRIDE, vertexData)
+    vertexData.position(2)
+    GLES20.glEnableVertexAttribArray(wmATextureCoordLoc)
+    GLES20.glVertexAttribPointer(wmATextureCoordLoc, 2, GLES20.GL_FLOAT, false, STRIDE, vertexData)
+
+    GLES20.glUniformMatrix4fv(wmUPosMatrixLoc, 1, false, watermarkPosMatrix, 0)
+    GLES20.glUniform1f(wmUOpacityLoc, WM_OPACITY)
+
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, watermarkTexId)
+
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+    GLES20.glDisableVertexAttribArray(wmAPositionLoc)
+    GLES20.glDisableVertexAttribArray(wmATextureCoordLoc)
+    GLES20.glDisable(GLES20.GL_BLEND)
   }
 
   private fun createFbo(w: Int, h: Int): Pair<Int, Int> {
@@ -566,6 +653,40 @@ class GlRenderer(private val encoderSurface: Surface) {
         sum += texture2D(sTexture2D, vTextureCoord + 3.0 * uBlurStep) * 0.0540540541;
         sum += texture2D(sTexture2D, vTextureCoord + 4.0 * uBlurStep) * 0.0162162162;
         gl_FragColor = mix(sum, vec4(uTintColor.rgb, sum.a), uTintColor.a);
+      }
+    """
+
+    // --- watermark additions (HARD RULE 6) ---
+
+    private const val WM_WIDTH_FRACTION = 0.20   // watermark width, as a fraction of canvas width
+    private const val WM_MARGIN_FRACTION = 0.04  // corner margin, as a fraction of canvas width
+    private const val WM_OPACITY = 0.85f
+
+    private const val WATERMARK_VERTEX_SHADER = """
+      attribute vec4 aPosition;
+      attribute vec4 aTextureCoord;
+      uniform mat4 uPosMatrix;
+      varying vec2 vTextureCoord;
+      void main() {
+        gl_Position = uPosMatrix * aPosition;
+        // The shared quad's v-coordinate is set up for OES video frames, which are corrected by
+        // SurfaceTexture's own stMatrix. A plain Bitmap (uploaded via GLUtils.texImage2D, no
+        // stMatrix) stores row 0 as the image's TOP row, so without this flip the watermark
+        // renders upside down.
+        vTextureCoord = vec2(aTextureCoord.x, 1.0 - aTextureCoord.y);
+      }
+    """
+
+    // Straight alpha-blended sample — no crop, no blur; the whole watermark image is shown as-is,
+    // just placed small in a corner (via uPosMatrix) and faded slightly (uOpacity).
+    private const val WATERMARK_FRAGMENT_SHADER = """
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform sampler2D sTexture2D;
+      uniform float uOpacity;
+      void main() {
+        vec4 c = texture2D(sTexture2D, vTextureCoord);
+        gl_FragColor = vec4(c.rgb, c.a * uOpacity);
       }
     """
   }
