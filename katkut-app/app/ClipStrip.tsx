@@ -122,10 +122,19 @@ const ClipItem = React.memo(function ClipItem({
   const baseOut = item.out;
 
   const widthSv = useSharedValue(Math.max(MIN_CLIP_W, (baseOut - baseIn) * pxPerSec));
-  // Sync width when the committed trim or zoom changes (covers undo/redo too).
+  // Extending from the LEFT handle grows width the same way extending from the right does — but
+  // a flex row only ever extends a box's RIGHT edge when its width grows. Without compensation,
+  // left-handle drags visually grow the block into the NEXT clip while the left edge (and the
+  // handle itself) never appears to move — "front stays frozen, back seems to change." This shift
+  // moves the whole item left by exactly the width gained, so the RIGHT edge stays anchored and
+  // the LEFT edge is the one that visually extends, matching the handle you're actually dragging.
+  const leftShiftSv = useSharedValue(0);
+  // Sync width + shift when the committed trim or zoom changes (covers undo/redo too) — kept in
+  // the same effect so they animate back to their settled state in lockstep, no visual jump.
   useEffect(() => {
     widthSv.value = withTiming(Math.max(MIN_CLIP_W, (baseOut - baseIn) * pxPerSec), { duration: 160 });
-  }, [baseIn, baseOut, pxPerSec, widthSv]);
+    leftShiftSv.value = withTiming(0, { duration: 160 });
+  }, [baseIn, baseOut, pxPerSec, widthSv, leftShiftSv]);
 
   // Live trim values, written by the UI-thread worklets and read once on release for the commit.
   const trimInSv = useSharedValue(baseIn);
@@ -146,12 +155,16 @@ const ClipItem = React.memo(function ClipItem({
     .enabled(handlesEnabled && isSelected)
     .onStart(() => {
       trimInSv.value = baseIn;
+      leftShiftSv.value = 0;
       runOnJS(hapticLight)();
     })
     .onUpdate((e) => {
       const newIn = Math.max(0, Math.min(baseOut - MIN_LEN_SEC, baseIn + e.translationX / pxPerSec));
       trimInSv.value = newIn;
       widthSv.value = Math.max(MIN_CLIP_W, (baseOut - newIn) * pxPerSec);
+      // Negative when extending backward (newIn < baseIn) — shifts the item left so the RIGHT
+      // edge stays anchored while the LEFT edge is the one that visibly extends.
+      leftShiftSv.value = (newIn - baseIn) * pxPerSec;
     })
     .onEnd(() => {
       runOnJS(commitLeft)(trimInSv.value);
@@ -209,7 +222,10 @@ const ClipItem = React.memo(function ClipItem({
       }
     });
 
-  const animStyle = useAnimatedStyle(() => {
+  // Applied to the WRAPPER (handles + block together), so both move in lockstep: reorder-shift
+  // (clips gliding aside) and the left-trim compensation above both live here, never on the block
+  // alone — otherwise the handles (siblings of the block, not children of it) wouldn't track it.
+  const wrapperAnimStyle = useAnimatedStyle(() => {
     const from = dragActiveSv.value;
     const isDragged = from === index;
     let translateX;
@@ -226,11 +242,20 @@ const ClipItem = React.memo(function ClipItem({
       translateX = withSpring(0, SHIFT_SPRING);
     }
     return {
-      width: widthSv.value,
-      transform: [{ translateX }],
+      transform: [{ translateX: translateX + leftShiftSv.value }],
       zIndex: isDragged ? 100 : isSelected ? 50 : 1,
     };
   });
+
+  // Block only ever needs its width animated — position comes entirely from the wrapper above.
+  const blockAnimStyle = useAnimatedStyle(() => ({ width: widthSv.value }));
+
+  // The right handle must track the live width directly rather than relying on CSS `right`
+  // positioning against a box whose width is being mutated by Reanimated on the UI thread — that
+  // dependency is exactly the kind of thing that produced the left-handle bug this fixes.
+  const rightHandleStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: widthSv.value - 14 }],
+  }));
 
   // Filmstrip tiles from the COMMITTED duration (tile count updating mid-drag would re-render;
   // the width visual still follows the finger via widthSv).
@@ -242,7 +267,7 @@ const ClipItem = React.memo(function ClipItem({
     : `${durationSec.toFixed(1)}s`;
 
   return (
-    <View style={styles.clipWrapper}>
+    <Animated.View style={[styles.clipWrapper, wrapperAnimStyle]}>
       {/* Trim handles */}
       {isSelected && handlesEnabled && (
         <>
@@ -254,7 +279,7 @@ const ClipItem = React.memo(function ClipItem({
             </Animated.View>
           </GestureDetector>
           <GestureDetector gesture={trimRightGesture}>
-            <Animated.View style={[styles.trimHandle, styles.trimHandleRight]}>
+            <Animated.View style={[styles.trimHandle, styles.trimHandleRightBase, rightHandleStyle]}>
               <View style={styles.trimHandleInner}>
                 <ChevronRight size={12} color="#000" strokeWidth={3} />
               </View>
@@ -264,7 +289,7 @@ const ClipItem = React.memo(function ClipItem({
       )}
 
       <GestureDetector gesture={dragGesture}>
-        <Animated.View style={[styles.clipBlock, animStyle]}>
+        <Animated.View style={[styles.clipBlock, blockAnimStyle]}>
           <Pressable
             onPress={() => {
               hapticLight();
@@ -312,7 +337,7 @@ const ClipItem = React.memo(function ClipItem({
           </Pressable>
         </Animated.View>
       </GestureDetector>
-    </View>
+    </Animated.View>
   );
 });
 
@@ -680,8 +705,10 @@ const styles = StyleSheet.create({
   trimHandleLeft: {
     left: -14,
   },
-  trimHandleRight: {
-    right: -14,
+  // Positioned via the animated rightHandleStyle (translateX = widthSv - 14), not CSS `right` —
+  // see the comment on rightHandleStyle for why.
+  trimHandleRightBase: {
+    left: 0,
   },
   trimHandleInner: {
     width: 28,

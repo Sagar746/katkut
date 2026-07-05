@@ -658,7 +658,7 @@ class GlRenderer(private val encoderSurface: Surface) {
 
     // --- watermark additions (HARD RULE 6) ---
 
-    private const val WM_WIDTH_FRACTION = 0.20   // watermark width, as a fraction of canvas width
+    private const val WM_WIDTH_FRACTION = 0.16   // watermark width, as a fraction of canvas width
     private const val WM_MARGIN_FRACTION = 0.04  // corner margin, as a fraction of canvas width
     private const val WM_OPACITY = 0.85f
 

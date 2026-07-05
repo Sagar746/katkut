@@ -14,13 +14,9 @@
       "package": "com.katkut.app",
       "adaptiveIcon": {
         "backgroundColor": "#141414",
-        "foregroundImage": "./assets/katkutai_app_icon.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/katkutai_app_icon.png"
       },
       "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
     },
     "extra": {
       "eas": {

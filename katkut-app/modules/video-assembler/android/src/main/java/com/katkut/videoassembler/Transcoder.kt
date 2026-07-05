@@ -10,6 +10,7 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.net.Uri
+import android.util.Log
 import java.nio.ByteBuffer
 
 data class Segment(
@@ -36,7 +37,6 @@ class Transcoder(private val context: Context) {
     outputPath: String,
     audioMode: String,
     resolution: String,
-    watermarkUri: String? = null,
   ) {
     if (segments.isEmpty()) throw IllegalArgumentException("No segments to assemble")
 
@@ -61,19 +61,30 @@ class Transcoder(private val context: Context) {
     val inputSurface = encoder.createInputSurface()
     val renderer = GlRenderer(inputSurface)
     renderer.setup()
-    // HARD RULE 6 (freemium): watermark every free export. Best-effort — a bad/missing asset
-    // should never break the whole export, so failures here are swallowed, not thrown.
-    if (!watermarkUri.isNullOrEmpty()) {
-      try {
-        val bitmap = loadWatermarkBitmap(watermarkUri)
+    // HARD RULE 6 (freemium): watermark every free export. Loaded as a NATIVE resource bundled
+    // with this module (res/drawable-nodpi/watermark.png), not from JS — the watermark is a fixed
+    // brand asset, not user content, and `expo-asset`'s Asset.fromModule() proved unreliable for
+    // this: for a bundled Android image it can synchronously set `localUri` to a bare, schemeless
+    // resource-name string (a shortcut meant for RN's <Image>, which resolves it internally) —
+    // that string was never a real openable file/content URI, so ContentResolver.openInputStream()
+    // on it silently failed, and the previous blanket try/catch swallowed the failure with no
+    // logging. A bundled resource has none of that ambiguity: BitmapFactory.decodeResource always
+    // works or the module fails to build.
+    try {
+      val bitmap = BitmapFactory.decodeResource(context.resources, R.drawable.watermark)
+      if (bitmap == null) {
+        Log.w(TAG, "Watermark: decodeResource(R.drawable.watermark) returned null — skipping watermark for this export.")
+      } else {
         try {
           renderer.setWatermark(bitmap, outW, outH)
         } finally {
           bitmap.recycle()
         }
-      } catch (_: Exception) {
-        // no watermark this export; everything else proceeds normally
       }
+    } catch (e: Exception) {
+      // Best-effort: never fail the whole export over the watermark, but ALWAYS log why —
+      // silent failure here is exactly what made the original bug invisible.
+      Log.w(TAG, "Watermark setup failed, exporting without one: ${e.message}", e)
     }
     encoder.start()
 
@@ -260,15 +271,6 @@ class Transcoder(private val context: Context) {
     }
   }
 
-  private fun loadWatermarkBitmap(uri: String): Bitmap {
-    val parsed = Uri.parse(uri)
-    val stream = context.contentResolver.openInputStream(parsed)
-      ?: throw IllegalStateException("Cannot open watermark: $uri")
-    return stream.use {
-      BitmapFactory.decodeStream(it) ?: throw IllegalStateException("Failed to decode watermark: $uri")
-    }
-  }
-
   private fun displayedAspect(uri: Uri): Double {
     val retriever = MediaMetadataRetriever()
     try {
@@ -291,6 +293,7 @@ class Transcoder(private val context: Context) {
   }
 
   companion object {
+    private const val TAG = "KatKutTranscoder"
     private const val MIME = "video/avc"
     private const val FPS = 30
     private const val IFRAME_INTERVAL = 1
