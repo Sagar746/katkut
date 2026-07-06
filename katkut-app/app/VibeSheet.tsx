@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   Check,
   ChevronLeft,
@@ -13,38 +14,43 @@ import {
 } from 'lucide-react-native';
 import { VIBE_CHOICES } from '../core';
 import { space } from './theme';
+import PressableScale from './components/PressableScale';
 
 export interface VibeSheetProps {
   onChoose: (vibeId: string) => void;
   onCancel: () => void;
 }
 
-// Per-vibe icon, accent color and the user-facing description.
-const VIBE_CONFIG: Record<string, { icon: LucideIcon; accent: string; desc: string }> = {
+// expo-linear-gradient's `colors` prop requires a fixed-length tuple (readonly [C, C, ...]), not a
+// plain string[] — a bare array literal here would widen to string[] and fail to type-check.
+type Gradient = readonly [string, string];
+
+const VIBE_CONFIG: Record<string, { icon: LucideIcon; accent: string; desc: string; gradient?: Gradient }> = {
   auto: {
     icon: Sparkles,
-    accent: '#0A84FF',
-    desc: 'AI Smart Cut optimized for premium, long-form pacing. Perfect for stitching multiple cinematic videos together into longer, natural rhythmic cuts with smart multi-clip selection from your best landscape or vertical footage.',
+    accent: '#00C6FF',
+    gradient: ['#9B51E0', '#00C6FF'], // Signature Brand Gradient from katkutai_icon_512.png
+    desc: 'Adaptive pacing for natural, long-form cuts.',
   },
   food_cooking: {
     icon: Utensils,
     accent: '#FF6B35',
-    desc: 'Restaurant reviews, recipe steps, and satisfying kitchen edits. Favors macro close-ups, steady shots, and crisp original audio.',
+    desc: 'Macro close-ups, steady shots, crisp audio.',
   },
   travel_adventure: {
     icon: Plane,
     accent: '#00C6FF',
-    desc: 'Vacation diaries, scenic nature, and outdoor exploring. Sweeping wide-angle shots with smooth, flowing transitions.',
+    desc: 'Wide shots, smooth flow, scenic pacing.',
   },
   mini_vlog: {
     icon: Film,
     accent: '#FF2D95',
-    desc: '“Day in My Life” montages, GRWM, or gym logs. Packs daily memories into hyper-fast, high-energy beat cuts.',
+    desc: 'Fast, high-energy beat cuts.',
   },
   unboxing: {
     icon: ShoppingBag,
     accent: '#BF5AF2',
-    desc: 'Try-on hauls, shopping, tech unboxing, and before-and-after glow-ups. Slow setups paired with instant transformation cuts.',
+    desc: 'Slow setups, instant reveal cuts.',
   },
 };
 
@@ -53,134 +59,260 @@ export default function VibeSheet({ onChoose, onCancel }: VibeSheetProps) {
   const [selected, setSelected] = useState<string>('auto');
 
   const selectedLabel = VIBE_CHOICES.find((v) => v.id === selected)?.label ?? 'Auto';
+  const currentCfg = VIBE_CONFIG[selected] ?? VIBE_CONFIG.auto;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + space.md }]}>
       {/* Header */}
       <View style={styles.header}>
-        <Pressable onPress={onCancel} style={styles.backButton} hitSlop={8}>
-          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2} />
-        </Pressable>
-        <Text style={styles.stepIndicator}>2 of 3</Text>
+        <PressableScale hitSlop={12} onPress={onCancel} style={styles.backButton}>
+          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2.5} />
+        </PressableScale>
+        <View style={styles.badgeWrapper}>
+          <Text style={styles.stepIndicator}>2 of 3</Text>
+        </View>
         <View style={styles.headerSpacer} />
       </View>
 
-      {/* Title */}
+      {/* Title Section */}
       <View style={styles.titleSection}>
         <Text style={styles.title}>Choose your style</Text>
-        <Text style={styles.subtitle}>This shapes how KatKut picks and paces your clips.</Text>
+        <Text style={styles.subtitle}>This shapes how KatKut edits, cuts, and paces your footage.</Text>
       </View>
 
-      {/* Options list */}
+      {/* Options List */}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
         {VIBE_CHOICES.map((vibe) => {
           const cfg = VIBE_CONFIG[vibe.id] ?? VIBE_CONFIG.auto;
           const Icon = cfg.icon;
           const isSelected = selected === vibe.id;
+
           return (
-            <Pressable
+            <PressableScale
               key={vibe.id}
               onPress={() => setSelected(vibe.id)}
               style={[
                 styles.row,
-                isSelected && { borderColor: cfg.accent, backgroundColor: cfg.accent + '14' },
+                isSelected && !cfg.gradient && { borderColor: cfg.accent },
               ]}
             >
-              <View style={[styles.iconWrap, { backgroundColor: cfg.accent + '22' }]}>
-                <Icon size={22} color={cfg.accent} strokeWidth={2} />
+              {/* Dynamic Selection Border Gradients */}
+              {isSelected && (
+                <View style={StyleSheet.absoluteFill}>
+                  <LinearGradient
+                    colors={cfg.gradient ? cfg.gradient : ([cfg.accent + '22', 'transparent'] as const)}
+                    style={styles.gradientBorderBg}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                  />
+                </View>
+              )}
+
+              {/* Icon Container Wrapper */}
+              <View style={[styles.iconWrap, { backgroundColor: isSelected ? (cfg.gradient ? '#1A142E' : cfg.accent + '22') : '#141417' }]}>
+                {cfg.gradient ? (
+                  <Sparkles size={20} color="#00C6FF" strokeWidth={2.2} />
+                ) : (
+                  <Icon size={20} color={isSelected ? cfg.accent : '#71717A'} strokeWidth={2.2} />
+                )}
               </View>
 
+              {/* Text Layout Block */}
               <View style={styles.rowText}>
                 <View style={styles.rowTitleRow}>
-                  <Text style={styles.rowLabel}>{vibe.label}</Text>
+                  <Text style={[styles.rowLabel, isSelected && styles.rowLabelActive]}>{vibe.label}</Text>
                   {vibe.id === 'auto' && (
-                    <View style={styles.aiBadge}>
-                      <Text style={styles.aiBadgeText}>AI</Text>
-                    </View>
+                    <LinearGradient colors={['#9B51E0', '#00C6FF'] as const} style={styles.aiBadge} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                      <Text style={styles.aiBadgeText}>SMART AI</Text>
+                    </LinearGradient>
                   )}
                 </View>
-                <Text style={styles.rowDesc}>{cfg.desc}</Text>
+                <Text style={[styles.rowDesc, isSelected && styles.rowDescActive]}>{cfg.desc}</Text>
               </View>
 
-              <View style={[styles.radio, isSelected && { borderColor: cfg.accent, backgroundColor: cfg.accent }]}>
-                {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+              {/* Check Radio Indicators */}
+              <View style={[
+                styles.radio,
+                isSelected && {
+                  borderColor: cfg.gradient ? '#00C6FF' : cfg.accent,
+                  backgroundColor: cfg.gradient ? '#00C6FF' : cfg.accent,
+                },
+              ]}>
+                {isSelected && <Check size={12} color="#FFFFFF" strokeWidth={3.5} />}
               </View>
-            </Pressable>
+            </PressableScale>
           );
         })}
       </ScrollView>
 
-      {/* Continue */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>
-        <Pressable style={styles.continueButton} onPress={() => onChoose(selected)}>
-          <Text style={styles.continueText}>Continue with {selectedLabel}</Text>
-        </Pressable>
+      {/* Dynamic CTA Footer Section */}
+      <View style={[styles.footer, { paddingBottom: insets.bottom + space.lg }]}>
+        <PressableScale style={styles.continueButtonContainer} onPress={() => onChoose(selected)}>
+          <LinearGradient
+            colors={currentCfg.gradient ? currentCfg.gradient : ([currentCfg.accent, currentCfg.accent] as const)}
+            style={styles.continueGradientBtn}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+          >
+            <Text style={styles.continueText}>Edit in {selectedLabel} Mode</Text>
+          </LinearGradient>
+        </PressableScale>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000000', paddingHorizontal: space.md },
+  container: {
+    flex: 1,
+    backgroundColor: '#09090B', // Dark slate theme base
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
     marginBottom: space.md,
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#1C1C1E',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#141417',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
   },
-  stepIndicator: { fontSize: 13, fontWeight: '600', color: '#8E8E93', letterSpacing: 0.5 },
-  headerSpacer: { width: 40 },
-  titleSection: { marginBottom: space.lg },
-  title: { fontSize: 30, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.5, marginBottom: 6 },
-  subtitle: { fontSize: 15, color: '#8E8E93', lineHeight: 20 },
-  list: { gap: space.sm, paddingBottom: space.md },
+  badgeWrapper: {
+    backgroundColor: '#141417',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.04)',
+  },
+  stepIndicator: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#71717A',
+    letterSpacing: 0.5,
+  },
+  headerSpacer: { width: 44 },
+  titleSection: {
+    paddingHorizontal: space.xl,
+    marginBottom: space.xl,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.6,
+    marginBottom: 6,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#71717A',
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  list: {
+    gap: 14,
+    paddingHorizontal: space.xl,
+    paddingBottom: space.xl,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
-    padding: space.md,
-    borderRadius: 16,
-    backgroundColor: '#1C1C1E',
+    padding: 18,
+    borderRadius: 24,
+    backgroundColor: '#141417',
     borderWidth: 1.5,
-    borderColor: '#2C2C2E',
+    borderColor: 'rgba(255,255,255,0.04)',
+    overflow: 'hidden',
+  },
+  gradientBorderBg: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0.08,
   },
   iconWrap: {
     width: 46,
     height: 46,
-    borderRadius: 12,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
   rowText: { flex: 1 },
-  rowTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
-  rowLabel: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
-  aiBadge: { backgroundColor: 'rgba(10,132,255,0.2)', borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1 },
-  aiBadgeText: { fontSize: 9, fontWeight: '800', color: '#0A84FF', letterSpacing: 0.5 },
-  rowDesc: { fontSize: 12, color: '#8E8E93', lineHeight: 16 },
+  rowTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  rowLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#A1A1AA',
+  },
+  rowLabelActive: {
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  aiBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  aiBadgeText: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  rowDesc: {
+    fontSize: 12,
+    color: '#52525B',
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  rowDescActive: {
+    color: '#A1A1AA',
+  },
   radio: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
-    borderColor: '#3A3A3C',
+    borderColor: '#27272A',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  footer: { paddingTop: space.sm },
-  continueButton: {
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
+  footer: {
+    paddingHorizontal: space.xl,
+  },
+  continueButtonContainer: {
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: '#00C6FF',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  continueGradientBtn: {
+    height: 58,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  continueText: { fontSize: 16, fontWeight: '700', color: '#000000' },
+  continueText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
 });

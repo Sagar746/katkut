@@ -154,8 +154,8 @@ export const VIBES: Record<string, VibeConfig> = {
 /** The vibe options shown in the selector sheet, in display order. */
 export const VIBE_CHOICES: VibeConfig[] = [
   AUTO,
-  FOOD_COOKING,
   TRAVEL_ADVENTURE,
   MINI_VLOG,
+  FOOD_COOKING,
   UNBOXING_STYLE,
 ];

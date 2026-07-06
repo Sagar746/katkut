@@ -1,8 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Rect } from 'react-native-svg';
-import { Check, Share2, ChevronLeft, Film, Download } from 'lucide-react-native';
+import Svg, { Rect, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Check, ChevronLeft, Film, Download } from 'lucide-react-native';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { exportReel } from './exportReel';
 import { saveToGallery, shareReel } from './share';
@@ -27,13 +34,17 @@ type Phase =
   | { kind: 'done'; outputPath: string }
   | { kind: 'error'; message: string };
 
-const THUMB_W = 200;
+const THUMB_W = 220;
 const THUMB_H = (THUMB_W * 16) / 9;
-const STROKE = 2;
+const STROKE = 3.0;
 const RECT_W = THUMB_W - STROKE;
 const RECT_H = THUMB_H - STROKE;
-const CORNER_R = 16;
+const CORNER_R = 24;
 const PERIMETER = 2 * (RECT_W - 2 * CORNER_R + RECT_H - 2 * CORNER_R) + 2 * Math.PI * CORNER_R;
+
+// Brand Gradient Presets matched to katkutai_icon_512.png
+const BRAND_GRADIENT = ['#9B51E0', '#00C6FF'] as const;
+const DONE_GRADIENT = ['#00B09B', '#96C93D'] as const;
 
 export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone, onCancel }: ExportScreenProps) {
   const insets = useSafeAreaInsets();
@@ -103,160 +114,175 @@ export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone,
   const isConfig = phase.kind === 'config';
   const isError = phase.kind === 'error';
   
-  const borderColor = isDone ? '#34C759' : '#007AFF';
   const dashoffset = PERIMETER * (1 - prog);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      
       {/* Header */}
       <View style={styles.header}>
         <PressableScale hitSlop={12} onPress={onCancel} style={styles.backButton}>
-          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2} />
+          <ChevronLeft size={22} color="#FFFFFF" strokeWidth={2.5} />
         </PressableScale>
         <Text style={styles.headerTitle}>
-          {isRunning ? 'Exporting' : isDone ? 'Complete' : 'Export Video'}
+          {isRunning ? 'Exporting Master' : isDone ? 'Export Complete' : 'Export Setup'}
         </Text>
         <View style={styles.headerSpacer} />
       </View>
 
-      {/* Main Content */}
-      <View style={styles.content}>
-        
-        {/* Thumbnail Preview */}
-        <View style={styles.previewContainer}>
-          <View style={styles.thumbnailWrapper}>
-            {thumb ? (
-              <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
-            ) : (
-              <View style={[styles.thumbnail, styles.thumbnailPlaceholder]}>
-                <Film size={36} color="#48484A" strokeWidth={1.5} />
+      <View style={styles.mainContent}>
+        {/* Preview Card Section */}
+        <View style={styles.previewCard}>
+          <View style={styles.thumbnailShadow}>
+            <View style={styles.thumbnailContainer}>
+              {thumb ? (
+                <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
+              ) : (
+                <View style={styles.thumbnailPlaceholder}>
+                  <Film size={36} color="#4A4A4F" strokeWidth={1.5} />
+                </View>
+              )}
+              
+              {!isConfig && (
+                <>
+                  <View style={styles.thumbnailOverlay} />
+                  <Svg width={THUMB_W} height={THUMB_H} style={StyleSheet.absoluteFill}>
+                    <SvgGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <Stop offset="0%" stopColor={isDone ? '#00B09B' : '#9B51E0'} />
+                      <Stop offset="100%" stopColor={isDone ? '#96C93D' : '#00C6FF'} />
+                    </SvgGradient>
+                    <Rect
+                      x={STROKE / 2}
+                      y={STROKE / 2}
+                      width={RECT_W}
+                      height={RECT_H}
+                      rx={CORNER_R}
+                      fill="none"
+                      stroke="url(#brandGrad)"
+                      strokeWidth={STROKE}
+                      strokeLinecap="round"
+                      strokeDasharray={PERIMETER}
+                      strokeDashoffset={dashoffset}
+                    />
+                  </Svg>
+                  <View style={styles.progressOverlay}>
+                    {isDone ? (
+                      <LinearGradient colors={DONE_GRADIENT} style={styles.doneBadge}>
+                        <Check size={22} color="#FFFFFF" strokeWidth={3} />
+                      </LinearGradient>
+                    ) : (
+                      <View style={styles.progressBadge}>
+                        <Text style={styles.progressPercent}>{Math.round(prog * 100)}%</Text>
+                      </View>
+                    )}
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+
+          {/* Core Dynamic Status Block */}
+          <View style={styles.statusSection}>
+            {isConfig && (
+              <Text style={styles.statusDesc}>Choose your export quality</Text>
+            )}
+            {isRunning && (
+              <View style={styles.statusRow}>
+                <ActivityIndicator size="small" color="#00C6FF" />
+                <Text style={styles.statusText}>{phase.label}</Text>
               </View>
             )}
-            
-            {!isConfig && (
-              <>
-                <View style={styles.overlay} />
-                <Svg width={THUMB_W} height={THUMB_H} style={StyleSheet.absoluteFill}>
-                  <Rect
-                    x={STROKE / 2}
-                    y={STROKE / 2}
-                    width={RECT_W}
-                    height={RECT_H}
-                    rx={CORNER_R}
-                    fill="none"
-                    stroke={borderColor}
-                    strokeWidth={STROKE}
-                    strokeLinecap="round"
-                    strokeDasharray={PERIMETER}
-                    strokeDashoffset={dashoffset}
-                  />
-                </Svg>
-                <View style={styles.thumbnailOverlay}>
-                  {isDone ? (
-                    <View style={styles.successIcon}>
-                      <Check size={32} color="#FFFFFF" strokeWidth={3} />
-                    </View>
-                  ) : (
-                    <View style={styles.progressContainer}>
-                      <Text style={styles.progressText}>{Math.round(prog * 100)}%</Text>
-                    </View>
-                  )}
-                </View>
-              </>
+            {isDone && (
+              <View style={styles.statusRow}>
+                <Check size={16} color="#00C6FF" strokeWidth={3} />
+                <Text style={[styles.statusText, { color: '#00C6FF', fontWeight: '600' }]}>Successfully saved to gallery</Text>
+              </View>
             )}
           </View>
         </View>
 
-        {/* Status Message */}
-        <View style={styles.statusContainer}>
-          {isConfig && (
-            <Text style={styles.statusDescription}>
-              Choose your preferred quality and export your video
-            </Text>
-          )}
-          {isRunning && (
-            <View style={styles.statusRow}>
-              <ActivityIndicator size="small" color="#007AFF" />
-              <Text style={styles.statusText}>{phase.label}</Text>
-            </View>
-          )}
-          {isDone && (
-            <View style={styles.statusRow}>
-              <Check size={16} color="#34C759" strokeWidth={3} />
-              <Text style={[styles.statusText, styles.successText]}>Saved to your gallery</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Resolution Selector */}
+        {/* Resolution Options Grid */}
         {isConfig && (
-          <View style={styles.resolutionContainer}>
+          <View style={styles.resSection}>
             <PressableScale
-              style={[styles.resolutionOption, resolution === '720p' && styles.resolutionActive]}
+              style={[styles.resCard, resolution === '720p' && styles.resCardActive]}
               onPress={() => setResolution('720p')}
             >
-              <Text style={[styles.resolutionText, resolution === '720p' && styles.resolutionTextActive]}>
-                HD 720p
+              {resolution === '720p' && (
+                <LinearGradient colors={['rgba(155,81,224,0.15)', 'rgba(0,198,255,0.02)']} style={StyleSheet.absoluteFill} start={{x:0, y:0}} end={{x:1, y:1}} />
+              )}
+              <Text style={[styles.resTitle, resolution === '720p' && styles.resTitleActive]}>
+                Standard HD (720p)
               </Text>
-              <Text style={[styles.resolutionSubtext, resolution === '720p' && styles.resolutionTextActive]}>
-                Good quality, smaller file
-              </Text>
+              <Text style={styles.resDesc}>Faster Export · Saves storage space</Text>
             </PressableScale>
             
             <PressableScale
-              style={[styles.resolutionOption, resolution === '1080p' && styles.resolutionActive]}
+              style={[styles.resCard, resolution === '1080p' && styles.resCardActive]}
               onPress={() => setResolution('1080p')}
             >
-              <Text style={[styles.resolutionText, resolution === '1080p' && styles.resolutionTextActive]}>
-                Full HD 1080p
+              {resolution === '1080p' && (
+                <LinearGradient colors={['rgba(155,81,224,0.15)', 'rgba(0,198,255,0.02)']} style={StyleSheet.absoluteFill} start={{x:0, y:0}} end={{x:1, y:1}} />
+              )}
+              <Text style={[styles.resTitle, resolution === '1080p' && styles.resTitleActive]}>
+                Mastering Quality (1080p)
               </Text>
-              <Text style={[styles.resolutionSubtext, resolution === '1080p' && styles.resolutionTextActive]}>
-                Best quality recommended
-              </Text>
+              <Text style={styles.resDesc}>Best quality · Recommended</Text>
             </PressableScale>
           </View>
         )}
       </View>
 
-      {/* Footer Actions */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>
+      {/* Dynamic Action Footer */}
+      <View style={[styles.footer, { paddingBottom: insets.bottom + space.lg }]}>
         {isConfig && (
-          <PressableScale style={styles.primaryButton} onPress={startExport}>
-            <Download size={20} color="#000000" strokeWidth={2} />
-            <Text style={styles.primaryButtonText}>Export Video</Text>
+          <PressableScale style={styles.exportButtonContainer} onPress={startExport}>
+            <LinearGradient colors={BRAND_GRADIENT} style={styles.exportGradientBtn} start={{x:0, y:0}} end={{x:1, y:0}}>
+              <Download size={20} color="#FFFFFF" strokeWidth={2.5} />
+              <Text style={styles.exportButtonText}>Export Video</Text>
+            </LinearGradient>
           </PressableScale>
         )}
 
         {isDone && (
-          <View style={styles.actionRow}>
-            <PressableScale style={styles.primaryButton} onPress={() => handleShare(phase.outputPath)}>
-              <Share2 size={20} color="#000000" strokeWidth={2} />
-              <Text style={styles.primaryButtonText}>Share Video</Text>
+          <View style={styles.doneActions}>
+            <Text style={styles.shareLabel}>Instant share to socials</Text>
+            <View style={styles.appIconsRow}>
+              <PressableScale style={styles.appIconBtn} onPress={() => handleShare(phase.outputPath)}>
+                <Image source={require('../assets/tiktok_icon.png')} style={styles.appIcon} />
+                <Text style={styles.appName}>TikTok</Text>
+              </PressableScale>
+              <PressableScale style={styles.appIconBtn} onPress={() => handleShare(phase.outputPath)}>
+                <Image source={require('../assets/capcut_icon.png')} style={styles.appIcon} />
+                <Text style={styles.appName}>CapCut</Text>
+              </PressableScale>
+              <PressableScale style={styles.appIconBtn} onPress={() => handleShare(phase.outputPath)}>
+                <Image source={require('../assets/edits_icon.png')} style={styles.appIcon} />
+                <Text style={styles.appName}>Edits</Text>
+              </PressableScale>
+            </View>
+
+            <PressableScale style={styles.doneButton} onPress={onDone}>
+              <Text style={styles.doneButtonText}>Finish Project</Text>
             </PressableScale>
-            
-            <PressableScale style={styles.secondaryButton} onPress={onDone}>
-              <Text style={styles.secondaryButtonText}>Done</Text>
-            </PressableScale>
-            
-            {saveMsg && <Text style={styles.errorText}>{saveMsg}</Text>}
+
+            {saveMsg && <Text style={styles.errorMsg}>{saveMsg}</Text>}
           </View>
         )}
 
         {isError && (
-          <View style={styles.actionRow}>
-            <View style={styles.errorContainer}>
-              <Text style={styles.errorTitle}>Export Failed</Text>
-              <Text style={styles.errorMessage}>{phase.message}</Text>
+          <View style={styles.errorBlock}>
+            <View style={styles.errorCard}>
+              <Text style={styles.errorTitle}>Export Engine Halted</Text>
+              <Text style={styles.errorDesc}>{phase.message}</Text>
             </View>
-            <PressableScale style={styles.secondaryButton} onPress={onCancel}>
-              <Text style={styles.secondaryButtonText}>Go Back</Text>
+            <PressableScale style={styles.retryButton} onPress={onCancel}>
+              <Text style={styles.retryButtonText}>Return to Timeline</Text>
             </PressableScale>
           </View>
         )}
 
         {isRunning && (
-          <Text style={styles.keepOpenText}>Please keep the app open during export</Text>
+          <Text style={styles.keepOpen}>Please don't close the app, video is exporting</Text>
         )}
       </View>
     </View>
@@ -266,65 +292,72 @@ export default function ExportScreen({ analyses, edl, vibeId, projectId, onDone,
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#09090B', // Premium deep layout backdrop
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#1C1C1E',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#141417',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
   },
   headerTitle: {
     fontSize: 17,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#FFFFFF',
     letterSpacing: -0.3,
   },
   headerSpacer: {
-    width: 40,
+    width: 44,
   },
-  content: {
+  mainContent: {
     flex: 1,
-    paddingHorizontal: space.lg,
-  },
-  previewContainer: {
-    flex: 1,
-    alignItems: 'center',
+    paddingHorizontal: space.xl,
     justifyContent: 'center',
-    marginBottom: space.lg,
   },
-  thumbnailWrapper: {
+  previewCard: {
+    backgroundColor: '#141417',
+    borderRadius: 32,
+    padding: 24,
+    marginBottom: 32,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  thumbnailShadow: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.6,
+    shadowRadius: 24,
+    elevation: 12,
+    borderRadius: CORNER_R,
+  },
+  thumbnailContainer: {
     width: THUMB_W,
     height: THUMB_H,
     borderRadius: CORNER_R,
     overflow: 'hidden',
-    backgroundColor: '#1C1C1E',
+    alignSelf: 'center',
+    backgroundColor: '#000000',
   },
   thumbnail: {
     width: '100%',
     height: '100%',
   },
   thumbnailPlaceholder: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1C1C1E',
-  },
-  overlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: '#1C1C21',
   },
   thumbnailOverlay: {
     position: 'absolute',
@@ -332,142 +365,206 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+  },
+  progressOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  progressContainer: {
+  progressBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: 'rgba(20, 20, 23, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  progressText: {
-    fontSize: 42,
-    fontWeight: '700',
+  progressPercent: {
+    fontSize: 24,
+    fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: -0.5,
   },
-  successIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#34C759',
+  doneBadge: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#00B09B',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
   },
-  statusContainer: {
+  statusSection: {
+    marginTop: 20,
     alignItems: 'center',
-    marginBottom: space.lg,
-    minHeight: 40,
   },
-  statusDescription: {
-    fontSize: 15,
-    color: '#8E8E93',
+  statusDesc: {
+    fontSize: 13,
+    color: '#71717A',
     textAlign: 'center',
-    lineHeight: 20,
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   statusText: {
     fontSize: 14,
-    color: '#8E8E93',
+    color: '#E4E4E7',
     fontWeight: '500',
   },
-  successText: {
-    color: '#34C759',
-    fontWeight: '600',
+  resSection: {
+    gap: 14,
   },
-  resolutionContainer: {
-    gap: 10,
-    marginBottom: space.md,
-  },
-  resolutionOption: {
-    backgroundColor: '#1C1C1E',
-    borderRadius: 14,
-    padding: 16,
+  resCard: {
+    backgroundColor: '#141417',
+    borderRadius: 20,
+    padding: 20,
     borderWidth: 1.5,
-    borderColor: '#2C2C2E',
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
   },
-  resolutionActive: {
-    borderColor: '#007AFF',
-    backgroundColor: '#1C1C1E',
+  resCardActive: {
+    borderColor: '#00C6FF', // Anchored on corporate cyan brand mark
   },
-  resolutionText: {
+  resTitle: {
     fontSize: 16,
     fontWeight: '600',
+    color: '#A1A1AA',
+    marginBottom: 4,
+  },
+  resTitleActive: {
     color: '#FFFFFF',
-    marginBottom: 2,
   },
-  resolutionTextActive: {
-    color: '#007AFF',
-  },
-  resolutionSubtext: {
+  resDesc: {
     fontSize: 13,
-    color: '#8E8E93',
+    color: '#52525B',
   },
   footer: {
-    paddingHorizontal: space.lg,
-    gap: space.md,
+    paddingHorizontal: space.xl,
   },
-  actionRow: {
-    gap: 12,
+  exportButtonContainer: {
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: '#9B51E0',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 8,
   },
-  primaryButton: {
-    backgroundColor: '#FFFFFF',
-    height: 54,
-    borderRadius: 27,
+  exportGradientBtn: {
+    height: 60,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 10,
   },
-  primaryButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '600',
-    letterSpacing: -0.3,
-  },
-  secondaryButton: {
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 1.5,
-    borderColor: '#2C2C2E',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryButtonText: {
+  exportButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: '700',
+    letterSpacing: -0.2,
   },
-  errorContainer: {
-    backgroundColor: 'rgba(255, 59, 48, 0.1)',
-    borderRadius: 14,
-    padding: 16,
+  doneActions: {
+    gap: 20,
+  },
+  shareLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#52525B',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+  },
+  appIconsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 36,
+  },
+  appIconBtn: {
+    alignItems: 'center',
+    gap: 10,
+  },
+  appIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+  },
+  appName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#A1A1AA',
+  },
+  doneButton: {
+    backgroundColor: '#141417',
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.2)',
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginTop: 8,
+  },
+  doneButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  errorBlock: {
+    gap: 16,
+  },
+  errorCard: {
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.15)',
   },
   errorTitle: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#FF3B30',
+    fontWeight: '700',
+    color: '#EF4444',
     marginBottom: 4,
   },
-  errorMessage: {
-    fontSize: 14,
-    color: '#FF3B30',
-    lineHeight: 20,
-  },
-  errorText: {
+  errorDesc: {
     fontSize: 13,
-    color: '#FF3B30',
-    textAlign: 'center',
-  },
-  keepOpenText: {
-    fontSize: 13,
-    color: '#636366',
-    textAlign: 'center',
+    color: 'rgba(239, 68, 68, 0.8)',
     lineHeight: 18,
+  },
+  retryButton: {
+    backgroundColor: '#141417',
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  errorMsg: {
+    fontSize: 13,
+    color: '#EF4444',
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  keepOpen: {
+    fontSize: 12,
+    color: '#52525B',
+    textAlign: 'center',
+    paddingVertical: 4,
+    fontWeight: '500',
   },
 });

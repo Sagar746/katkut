@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -9,6 +9,7 @@ import Animated, {
   FadeIn,
   FadeOut,
 } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Sparkles } from 'lucide-react-native';
 import { VideoAnalysis } from '../native';
 import { AnalysisClip, Edl, PhotoRef, PHOTO_DURATION, buildReel } from '../core';
@@ -16,8 +17,6 @@ import { generateProxies } from './proxies';
 import { PickedClip } from './types';
 import { space } from './theme';
 
-/** Photo → a degenerate AnalysisClip (no windows). It's skipped by video selection but carries its
- *  uri through the shared clipId→uri map so preview/export can find the still. */
 function photoAnalysisClip(p: PickedClip): AnalysisClip {
   const orientation =
     p.width != null && p.height != null
@@ -33,9 +32,7 @@ function photoAnalysisClip(p: PickedClip): AnalysisClip {
 export interface ProcessingScreenProps {
   clips: PickedClip[];
   vibeId: string;
-  /** chosen on the options screen — overrides the vibe's target length range */
   lengthRange?: { min: number; max: number } | null;
-  /** chosen on the options screen — force every clip muted (default true) */
   muteAll?: boolean;
   onDone: (analyses: AnalysisClip[], edl: Edl, proxies: Map<string, string>) => void;
 }
@@ -47,6 +44,8 @@ const STATUS_MESSAGES = [
   'Syncing audio beats...',
   'Finalizing your edit...',
 ];
+
+const BRAND_GRADIENT = ['#9B51E0', '#00C6FF'] as const;
 
 export default function ProcessingScreen({
   clips,
@@ -62,39 +61,35 @@ export default function ProcessingScreen({
   const startedRef = useRef(false);
   const messageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Glow animations
-  const innerGlow = useSharedValue(0);
-  const outerGlow = useSharedValue(0);
+  // Core Pulse Scaling & Opacity Values
+  const pulseScale = useSharedValue(1);
+  const coreRotate = useSharedValue(0);
 
   useEffect(() => {
-    innerGlow.value = withRepeat(
+    pulseScale.value = withRepeat(
       withSequence(
-        withTiming(1, { duration: 1500 }),
-        withTiming(0.3, { duration: 1500 })
+        withTiming(1.15, { duration: 1800 }),
+        withTiming(0.95, { duration: 1800 })
       ),
       -1,
       true
     );
-    
-    outerGlow.value = withRepeat(
-      withSequence(
-        withTiming(0.6, { duration: 2000 }),
-        withTiming(0.1, { duration: 2000 })
-      ),
+
+    coreRotate.value = withRepeat(
+      withTiming(360, { duration: 8000 }),
       -1,
-      true
+      false
     );
   }, []);
 
-  const innerGlowStyle = useAnimatedStyle(() => ({
-    opacity: innerGlow.value,
+  const animatedOrbStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pulseScale.value }],
   }));
 
-  const outerGlowStyle = useAnimatedStyle(() => ({
-    opacity: outerGlow.value,
+  const animatedIconStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${coreRotate.value}deg` }],
   }));
 
-  // Rotate messages
   useEffect(() => {
     messageTimerRef.current = setInterval(() => {
       setMessageIndex(prev => (prev + 1) % STATUS_MESSAGES.length);
@@ -110,7 +105,6 @@ export default function ProcessingScreen({
     startedRef.current = true;
 
     (async () => {
-      // Videos get analyzed + trimmed; photos skip analysis and become fixed 0.5s stills at the end.
       const videos = clips.filter((c) => c.kind !== 'photo');
       const photoClips = clips.filter((c) => c.kind === 'photo');
       const analyses: AnalysisClip[] = [];
@@ -129,17 +123,13 @@ export default function ProcessingScreen({
         setStatusText('AI is watching your videos...');
         const length = lengthRange ?? { min: 30, max: 60 };
         const photos: PhotoRef[] = photoClips.map((p) => ({ clipId: p.clipId, uri: p.uri }));
-        // photos flow through the shared clipId→uri map (as degenerate analyses) for preview/export
         const allAnalyses = [...analyses, ...photoClips.map(photoAnalysisClip)];
 
         await new Promise(r => setTimeout(r, 800));
 
         setProgress(0.72);
         setStatusText('Designing the timeline...');
-        // per-vibe rules (core/rules) build the cut from the chosen vibe + length; photos appended last
         const selected = buildReel(analyses, vibeId, { lengthMin: length.min, lengthMax: length.max }, photos);
-        // "Mute all" (default) overrides the Smart per-clip mute; "No" keeps Smart's flags.
-        // Photos are already muted and stay muted either way.
         const edl = muteAll
           ? { ...selected, timeline: selected.timeline.map((t) => ({ ...t, muted: true })) }
           : selected;
@@ -171,11 +161,13 @@ export default function ProcessingScreen({
   if (error) {
     return (
       <View style={styles.container}>
-        <View style={styles.errorRing}>
-          <Text style={styles.errorExclaim}>!</Text>
+        <View style={styles.errorCard}>
+          <View style={styles.errorRing}>
+            <Text style={styles.errorExclaim}>!</Text>
+          </View>
+          <Text style={styles.errorTitle}>Analysis Halted</Text>
+          <Text style={styles.errorMessage}>{error}</Text>
         </View>
-        <Text style={styles.errorTitle}>Something went wrong</Text>
-        <Text style={styles.errorMessage}>{error}</Text>
       </View>
     );
   }
@@ -184,170 +176,205 @@ export default function ProcessingScreen({
 
   return (
     <View style={styles.container}>
-      
-      {/* Glowing Orb Section */}
+      {/* Premium Multi-Layer Orb Section */}
       <View style={styles.orbSection}>
-        {/* Outer glow */}
-        <Animated.View style={[styles.outerGlow, outerGlowStyle]} />
-        
-        {/* Inner glow ring */}
-        <Animated.View style={[styles.innerGlowRing, innerGlowStyle]} />
-        
-        {/* Core orb */}
+        <Animated.View style={[styles.absoluteFill, animatedOrbStyle]}>
+          <LinearGradient
+            colors={['rgba(155,81,224,0.18)', 'rgba(0,198,255,0.03)']}
+            style={styles.outerGlowRing}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          />
+        </Animated.View>
+
         <View style={styles.coreOrb}>
-          <Sparkles size={40} color="#FFFFFF" strokeWidth={1.5} />
+          <LinearGradient
+            colors={['#1C1C21', '#141417']}
+            style={styles.absoluteFill}
+          />
+          <Animated.View style={animatedIconStyle}>
+            <Sparkles size={32} color="#00C6FF" strokeWidth={2} />
+          </Animated.View>
         </View>
       </View>
 
-      {/* Title */}
-      <Text style={styles.title}>AI is Creating Your Edit</Text>
+      {/* Primary Context Header Text */}
+      <Text style={styles.title}>Assembling Studio Cut</Text>
       
-      {/* Status text */}
+      {/* Cycling Secondary Prompt Block */}
       <Text style={styles.subtitle}>
         {STATUS_MESSAGES[messageIndex]}
       </Text>
 
-      {/* Progress bar */}
+      {/* Micro Progress Metrics Track */}
       <View style={styles.progressBarContainer}>
+        <View style={styles.progressHeader}>
+          <Animated.View key={statusText} entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)}>
+            <Text style={styles.bottomStatus}>{statusText}</Text>
+          </Animated.View>
+          <Text style={styles.percentText}>{percentage}%</Text>
+        </View>
         <View style={styles.progressBarBg}>
-          <View style={[styles.progressBarFill, { width: `${percentage}%` }]} />
+          <LinearGradient
+            colors={BRAND_GRADIENT}
+            style={[styles.progressBarFill, { width: `${percentage}%` }]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+          />
         </View>
       </View>
 
-      {/* Bottom status */}
-      <Animated.View 
-        key={statusText}
-        entering={FadeIn.duration(300)}
-        exiting={FadeOut.duration(200)}
-      >
-        <Text style={styles.bottomStatus}>{statusText}</Text>
-      </Animated.View>
+      {/* Activity Indicator Bottom Lock */}
+      <View style={styles.activityIndicatorRow}>
+        <ActivityIndicator size="small" color="#00C6FF" style={{ transform: [{ scale: 0.8 }] }} />
+        <Text style={styles.keepOpenText}>Please do not close the app</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  absoluteFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#09090B',
     alignItems: 'center',
     justifyContent: 'center',
     padding: space.xl,
   },
-  
-  // Orb
   orbSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 40,
+    marginBottom: 36,
+    width: 140,
+    height: 140,
     position: 'relative',
-    width: 120,
-    height: 120,
   },
-  
-  outerGlow: {
-    position: 'absolute',
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: '#8B5CF6',
-    opacity: 0.2,
+  outerGlowRing: {
+    flex: 1,
+    borderRadius: 70,
+    borderWidth: 1.5,
+    borderColor: 'rgba(0, 198, 255, 0.08)',
   },
-  
-  innerGlowRing: {
-    position: 'absolute',
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#3B82F6',
-    opacity: 0.3,
-  },
-  
   coreOrb: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#1C1C1E',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.06)',
+    shadowColor: '#00C6FF',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
   },
-  
-  // Title
   title: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: -0.5,
-    marginBottom: 12,
+    marginBottom: 6,
     textAlign: 'center',
   },
-  
   subtitle: {
-    fontSize: 16,
-    color: '#8E8E93',
-    marginBottom: 32,
+    fontSize: 14,
+    color: '#71717A',
+    marginBottom: 40,
     textAlign: 'center',
-    fontWeight: '500',
+    fontWeight: '600',
   },
-  
-  // Progress bar
   progressBarContainer: {
-    width: '80%',
-    maxWidth: 320,
-    marginBottom: 16,
+    width: '100%',
+    maxWidth: 300,
+    backgroundColor: '#141417',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.04)',
+    marginBottom: 24,
   },
-  
+  progressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  percentText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    fontVariant: ['tabular-nums'],
+  },
   progressBarBg: {
-    height: 2,
-    backgroundColor: '#1C1C1E',
-    borderRadius: 1,
+    height: 5,
+    backgroundColor: '#27272A',
+    borderRadius: 3,
     overflow: 'hidden',
   },
-  
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#3B82F6',
-    borderRadius: 1,
+    borderRadius: 3,
   },
-  
   bottomStatus: {
-    fontSize: 13,
-    color: '#636366',
-    textAlign: 'center',
+    fontSize: 12,
+    color: '#A1A1AA',
+    fontWeight: '500',
   },
-  
-  // Error
+  activityIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  keepOpenText: {
+    fontSize: 12,
+    color: '#52525B',
+    fontWeight: '600',
+  },
+  errorCard: {
+    backgroundColor: 'rgba(239, 68, 68, 0.04)',
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.15)',
+    alignItems: 'center',
+    maxWidth: 320,
+  },
   errorRing: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(255, 59, 48, 0.1)',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 59, 48, 0.2)',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  
   errorExclaim: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#FF3B30',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#EF4444',
   },
-  
   errorTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  
   errorMessage: {
-    fontSize: 14,
-    color: '#FF3B30',
+    fontSize: 13,
+    color: 'rgba(239, 68, 68, 0.8)',
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 18,
+    fontWeight: '500',
   },
 });
