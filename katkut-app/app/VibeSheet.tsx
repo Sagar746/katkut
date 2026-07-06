@@ -24,7 +24,7 @@ const VIBE_CONFIG: Record<string, { icon: LucideIcon; accent: string; desc: stri
   auto: {
     icon: Sparkles,
     accent: '#0A84FF',
-    desc: 'Casual videos, talking clips, or mixed comedy reels. Reads face presence and audio levels to keep the focus on the action.',
+    desc: 'AI Smart Cut optimized for premium, long-form pacing. Perfect for stitching multiple cinematic videos together into longer, natural rhythmic cuts with smart multi-clip selection from your best landscape or vertical footage.',
   },
   food_cooking: {
     icon: Utensils,

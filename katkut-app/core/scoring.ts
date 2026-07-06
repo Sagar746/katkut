@@ -65,8 +65,17 @@ const INTRO_SKIP_FRACTION = 0.25;
  * Universal rule (applies to every vibe, since all selection paths call this): for clips longer
  * than 5s, the first 25% is skipped before scoring even starts — openings are commonly a shaky
  * hand-raise / camera-up moment, so we never pick a keeper from inside that intro.
+ *
+ * `exclude` (optional): search only the footage OUTSIDE [exclude.in, exclude.out] — used to mine
+ * a second, non-overlapping segment out of the same clip (see auto.ts multi-clip extraction).
+ * Excluding a middle range splits the eligible windows into up to two disjoint runs; each is
+ * searched independently so the result can never bridge across the excluded gap.
  */
-export function bestSegment(clip: AnalysisClip, vibe: VibeConfig): ClipCandidate | null {
+export function bestSegment(
+  clip: AnalysisClip,
+  vibe: VibeConfig,
+  exclude?: { in: number; out: number },
+): ClipCandidate | null {
   if (clip.windows.length === 0) return null;
 
   const duration = clip.duration > 0 ? clip.duration : clip.windows[clip.windows.length - 1].end;
@@ -76,6 +85,21 @@ export function bestSegment(clip: AnalysisClip, vibe: VibeConfig): ClipCandidate
     const eligible = clip.windows.filter((w) => w.start >= skipUntil);
     if (eligible.length > 0) windows = eligible;
   }
+
+  if (!exclude) return bestSegmentIn(windows, vibe, clip.clipId);
+
+  const before = windows.filter((w) => w.end <= exclude.in);
+  const after = windows.filter((w) => w.start >= exclude.out);
+  const a = bestSegmentIn(before, vibe, clip.clipId);
+  const b = bestSegmentIn(after, vibe, clip.clipId);
+  if (!a) return b;
+  if (!b) return a;
+  return b.score > a.score ? b : a;
+}
+
+/** Sliding-window search over an already-contiguous run of windows (the shared core of bestSegment). */
+function bestSegmentIn(windows: AnalysisWindow[], vibe: VibeConfig, clipId: string): ClipCandidate | null {
+  if (windows.length === 0) return null;
 
   const scores = windows.map((w) => windowScore(w, vibe));
   const durs = windows.map(windowDuration);
@@ -87,7 +111,7 @@ export function bestSegment(clip: AnalysisClip, vibe: VibeConfig): ClipCandidate
     const sumScoreDur = scores.reduce((a, s, i) => a + s * durs[i], 0);
     const sumAudioDur = windows.reduce((a, w, i) => a + w.audioRMS * durs[i], 0);
     return {
-      clipId: clip.clipId,
+      clipId,
       in: windows[0].start,
       out: windows[windows.length - 1].end,
       score: totalDur > 0 ? sumScoreDur / totalDur : 0,
@@ -110,7 +134,7 @@ export function bestSegment(clip: AnalysisClip, vibe: VibeConfig): ClipCandidate
       const mean = sumScoreDur / segDur;
       if (best === null || mean > best.score) {
         best = {
-          clipId: clip.clipId,
+          clipId,
           in: windows[i].start,
           out: windows[j].end,
           score: mean,

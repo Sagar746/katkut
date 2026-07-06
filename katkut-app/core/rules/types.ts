@@ -7,6 +7,12 @@ export interface VibeRunParams {
   /** target reel length range, seconds (from the options screen). */
   lengthMin: number;
   lengthMax: number;
+  /**
+   * Source clips that survived `rejectClip`, filled in by `buildReel` (not the caller) before
+   * `resolveConfig` runs. Optional so existing call sites/tests that don't care are unaffected.
+   * Lets a rule (e.g. Auto) adapt pacing to how much footage is actually available.
+   */
+  clipCount?: number;
 }
 
 /**
@@ -25,4 +31,12 @@ export interface VibeRule {
 
   /** Adjust the chosen segment to land on natural cut points (scene cuts / audio spikes, etc.). */
   refineSegment(clip: AnalysisClip, candidate: ClipCandidate, cfg: VibeConfig): ClipCandidate;
+
+  /**
+   * Optional full override of the per-clip candidate pipeline: clip → one or more FINAL (already
+   * refined) candidates. When present, the shared engine (`buildReel`) uses this INSTEAD of
+   * bestSegment→refineSegment for this clip. Used by Auto to mine a second segment out of a long
+   * source clip when there isn't enough footage overall to reach the chosen length otherwise.
+   */
+  extractSegments?(clip: AnalysisClip, cfg: VibeConfig, clipCount: number): ClipCandidate[];
 }

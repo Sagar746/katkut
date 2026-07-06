@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { AnalysisClip, AnalysisWindow } from './types';
-import { selectTimeline } from './selection';
+import { selectTimeline, assembleEdl } from './selection';
 import { DAILY_REEL } from './vibes';
 
 function win(partial: Partial<AnalysisWindow>, start: number, dur = 1): AnalysisWindow {
@@ -94,5 +94,19 @@ describe('selectTimeline', () => {
     const edl = selectTimeline([goodClip('clip_01'), goodClip('clip_02')], DAILY_REEL);
     const sum = edl.timeline.reduce((a, t) => a + (t.out - t.in), 0);
     expect(edl.targetDuration).toBeCloseTo(Math.round(sum * 10) / 10, 5);
+  });
+
+  it('orders two same-clipId candidates (multi-clip extraction) by their own in-point', () => {
+    // Same clipId can appear twice when a rule mines 2 segments from one long source clip
+    // (see auto.ts) — the later segment is listed FIRST here to prove the sort doesn't just
+    // trust input order or clipId equality.
+    const edl = assembleEdl(
+      [
+        { clipId: 'clip_05', in: 30, out: 36, score: 0.9, meanAudioRMS: -40 },
+        { clipId: 'clip_05', in: 2, out: 8, score: 0.5, meanAudioRMS: -40 },
+      ],
+      DAILY_REEL,
+    );
+    expect(edl.timeline.map((t) => t.in)).toEqual([2, 30]);
   });
 });

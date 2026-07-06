@@ -15,6 +15,7 @@ import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handl
 import { Plus, Trash2, VolumeX, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Edl, TimelineItem } from '../core';
+import { thumbKey } from './useClipThumbnails';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -231,7 +232,7 @@ const ClipItem = React.memo(function ClipItem({
     let translateX;
     if (isDragged) {
       translateX = dragXSv.value; // raw finger-follow, no spring lag
-    } else if (from >= 0) {
+    } else if (from >= 0 && from < widthsPx.length) {
       const to = dragTargetSv.value;
       const dw = widthsPx[from] + GAP;
       let shift = 0;
@@ -241,8 +242,13 @@ const ClipItem = React.memo(function ClipItem({
     } else {
       translateX = withSpring(0, SHIFT_SPRING);
     }
+    // Two separate translateX entries (composes additively, same net position) rather than
+    // `translateX + leftShiftSv.value` — adding to withSpring()'s raw return value breaks
+    // Reanimated's special handling of it (it must be the direct, sole value of a transform/
+    // shared-value assignment), which was leaking its internal descriptor through as
+    // "[object Object]" and crashing the native transform serializer.
     return {
-      transform: [{ translateX: translateX + leftShiftSv.value }],
+      transform: [{ translateX }, { translateX: leftShiftSv.value }],
       zIndex: isDragged ? 100 : isSelected ? 50 : 1,
     };
   });
@@ -272,11 +278,13 @@ const ClipItem = React.memo(function ClipItem({
       {isSelected && handlesEnabled && (
         <>
           <GestureDetector gesture={trimLeftGesture}>
-            <Animated.View style={[styles.trimHandle, styles.trimHandleLeft]}>
+            {/* Plain View, not Animated.View — nothing here is animated (position is static,
+                unlike the right handle which tracks live width via rightHandleStyle). */}
+            <View style={[styles.trimHandle, styles.trimHandleLeft]}>
               <View style={styles.trimHandleInner}>
                 <ChevronLeft size={12} color="#000" strokeWidth={3} />
               </View>
-            </Animated.View>
+            </View>
           </GestureDetector>
           <GestureDetector gesture={trimRightGesture}>
             <Animated.View style={[styles.trimHandle, styles.trimHandleRightBase, rightHandleStyle]}>
@@ -547,7 +555,7 @@ function ClipStrip({
                       ? MAX_PHOTO_SEC
                       : durationByClipId.get(item.clipId) ?? item.out
                   }
-                  thumbUri={thumbs[item.clipId]}
+                  thumbUri={thumbs[thumbKey(item)]}
                   widthsPx={widthsPx}
                   offsetsPx={offsetsPx}
                   dragActiveSv={dragActiveSv}

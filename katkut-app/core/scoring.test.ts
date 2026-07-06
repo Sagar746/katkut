@@ -126,4 +126,33 @@ describe('bestSegment', () => {
     const seg = bestSegment(c, DAILY_REEL)!;
     expect(seg.in).toBe(0); // boundary case: 5s is NOT "longer than 5s" — no skip
   });
+
+  describe('exclude (multi-clip extraction support)', () => {
+    it('never returns a segment overlapping the excluded range', () => {
+      // 20 uniform sharp windows — every sub-range scores the same, so without exclusion the
+      // search would happily land on/around [8,12].
+      const windows = Array.from({ length: 20 }, (_, i) => SHARP(i));
+      const c = clip('clip_01', windows);
+      const seg = bestSegment(c, DAILY_REEL, { in: 8, out: 12 })!;
+      expect(seg).not.toBeNull();
+      const overlaps = seg.in < 12 && seg.out > 8;
+      expect(overlaps).toBe(false);
+    });
+
+    it('searches only the remaining side when one side has no room', () => {
+      // Excluding almost everything except a tail leaves only the "after" side searchable.
+      const windows = Array.from({ length: 20 }, (_, i) => SHARP(i));
+      const c = clip('clip_01', windows);
+      const seg = bestSegment(c, DAILY_REEL, { in: 0, out: 15 })!;
+      expect(seg).not.toBeNull();
+      expect(seg.in).toBeGreaterThanOrEqual(15);
+    });
+
+    it('returns null when both sides of the exclusion have no usable room', () => {
+      const windows = Array.from({ length: 5 }, (_, i) => SHARP(i)); // 5s clip
+      const c = clip('clip_01', windows);
+      const seg = bestSegment(c, DAILY_REEL, { in: 0, out: 5 });
+      expect(seg).toBeNull();
+    });
+  });
 });

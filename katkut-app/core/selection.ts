@@ -30,9 +30,13 @@ export function photoMotionForIndex(i: number): PhotoMotion {
 }
 
 /** Order keepers chronologically. We have no cross-clip capture time in v1, so clipId
- *  (clip_01, clip_02, … assigned in picker order) is the chronological proxy. */
+ *  (clip_01, clip_02, … assigned in picker order) is the chronological proxy. When two
+ *  candidates share a clipId (multi-clip extraction pulled 2 segments from one source clip —
+ *  see auto.ts), fall back to their own in-point so they stay in source-chronological order
+ *  instead of at the mercy of sort stability. */
 function byClipIdChronological(a: ClipCandidate, b: ClipCandidate): number {
-  return a.clipId.localeCompare(b.clipId, undefined, { numeric: true, sensitivity: 'base' });
+  const byId = a.clipId.localeCompare(b.clipId, undefined, { numeric: true, sensitivity: 'base' });
+  return byId !== 0 ? byId : a.in - b.in;
 }
 
 function segDuration(c: ClipCandidate): number {
