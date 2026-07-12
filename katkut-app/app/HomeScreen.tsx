@@ -89,9 +89,6 @@ function DraftCard({ project, onPress }: DraftCardProps) {
         </View>
       </View>
       <View style={styles.draftInfo}>
-        <Text style={styles.draftTitle} numberOfLines={1}>
-          {project.vibeId || 'Untitled Project'}
-        </Text>
         <Text style={styles.draftMeta}>
           {formatDuration(project.durationSec)} · {formatDate(project.updatedAt)}
         </Text>
@@ -506,11 +503,6 @@ const styles = StyleSheet.create({
   },
   draftInfo: {
     gap: 2,
-  },
-  draftTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
   },
   draftMeta: {
     fontSize: 12,
