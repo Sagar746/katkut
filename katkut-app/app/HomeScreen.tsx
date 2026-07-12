@@ -212,6 +212,7 @@ export default function HomeScreen({ onNewProject, onOpenDraft, onOpenExport, on
             </>
           )}
         </PressableScale>
+        <Text style={styles.newProjectHint}>Select at least 4 clips for the best results</Text>
 
         {/* Drafts Section */}
         {drafts.length > 0 && (
@@ -351,6 +352,12 @@ const styles = StyleSheet.create({
     gap: space.md,
     borderWidth: 1,
     borderColor: '#2C2C2E',
+    marginBottom: space.sm,
+  },
+  newProjectHint: {
+    fontSize: 12,
+    color: '#8E8E93',
+    textAlign: 'center',
     marginBottom: space.xl,
   },
   newProjectDisabled: {

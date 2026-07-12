@@ -163,20 +163,46 @@ public final class VideoPreviewView: ExpoView {
         continue
       }
 
+      // preferredTransform-oriented display rect for THIS segment, needed before renderSize can
+      // be established (for the first segment) or scaled against it (every segment after).
+      let displayRect = CGRect(origin: .zero, size: sourceVideoTrack.naturalSize).applying(sourceVideoTrack.preferredTransform)
+      let displaySize = CGSize(width: abs(displayRect.width), height: abs(displayRect.height))
+      if !haveRenderSize {
+        renderSize = displaySize
+        haveRenderSize = true
+      }
+
       let instruction = AVMutableVideoCompositionInstruction()
       instruction.timeRange = CMTimeRange(start: cursor, duration: range.duration)
       let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compVideoTrack)
       // preferredTransform per segment (not a single composition-wide transform) — sources can
       // differ in orientation even though the common case (proxies) is already uniform.
-      layerInstruction.setTransform(sourceVideoTrack.preferredTransform, at: cursor)
+      //
+      // BUG FIX: preferredTransform alone only rotates a segment into its oriented space — it
+      // never scales. Uniform proxies (the common case: ProxyTranscoder renders every clip to
+      // 720x1280) happen to already match renderSize, so this was invisible in normal use. But
+      // when a saved draft is reopened, proxies aren't persisted (OVERVIEW.md B5) and playback
+      // falls back to full-resolution originals of whatever size the source camera shot — without
+      // a scale factor, a segment whose native size differs from the first segment's renderSize
+      // renders at raw 1:1 pixel scale instead of filling the frame, showing only a cropped corner
+      // (or, for a smaller source, a tiny image in the middle of the canvas). Cover-fit scale +
+      // center makes every segment fill renderSize regardless of its native resolution — a no-op
+      // (scale 1.0, zero translation) for the uniform-proxy case, since renderSize IS the first
+      // segment's own displaySize.
+      let scale = max(renderSize.width / displaySize.width, renderSize.height / displaySize.height)
+      let scaledSize = CGSize(width: displaySize.width * scale, height: displaySize.height * scale)
+      let tx = (renderSize.width - scaledSize.width) / 2
+      let ty = (renderSize.height - scaledSize.height) / 2
+      let transform = sourceVideoTrack.preferredTransform
+        // normalize into (0,0)-anchored oriented space first — preferredTransform can rotate
+        // content to a negative origin depending on the rotation, which scaling must not carry
+        // through as an unintended additional offset
+        .concatenating(CGAffineTransform(translationX: -displayRect.minX, y: -displayRect.minY))
+        .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+        .concatenating(CGAffineTransform(translationX: tx, y: ty))
+      layerInstruction.setTransform(transform, at: cursor)
       instruction.layerInstructions = [layerInstruction]
       instructions.append(instruction)
-
-      if !haveRenderSize {
-        let displayRect = CGRect(origin: .zero, size: sourceVideoTrack.naturalSize).applying(sourceVideoTrack.preferredTransform)
-        renderSize = CGSize(width: abs(displayRect.width), height: abs(displayRect.height))
-        haveRenderSize = true
-      }
 
       if let sourceAudioTrack = asset.tracks(withMediaType: .audio).first {
         try? compAudioTrack.insertTimeRange(range, of: sourceAudioTrack, at: cursor)

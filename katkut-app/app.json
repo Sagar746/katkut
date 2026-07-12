@@ -8,9 +8,12 @@
     "icon": "./assets/katkutai_app_icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.katkut.app",
-      "buildNumber": "1"
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.katkut.app",
@@ -46,6 +49,7 @@
       "expo-video",
       "expo-font",
       "expo-asset",
+      "expo-apple-authentication",
       "./plugins/withReleaseSigning.js"
     ]
   }

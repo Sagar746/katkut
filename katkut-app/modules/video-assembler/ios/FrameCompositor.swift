@@ -25,8 +25,13 @@ enum FrameCompositor {
   ]
 
   private static let watermarkWidthFraction = 0.16
-  private static let watermarkMarginFraction = 0.04
-  private static let watermarkOpacity = 0.85
+  private static let watermarkLeftMarginFraction = 0.04
+  private static let watermarkTopOffsetFraction = 0.14
+  // The watermark PNG's own alpha channel now carries the intended translucency (baked in at
+  // asset-generation time, ~50%) — this is a pure pass-through multiplier, not a second opacity
+  // layer, so the asset's alpha is the single source of truth instead of two compounding values
+  // split across this file and the asset. Mirrors GlRenderer.kt's WM_OPACITY.
+  private static let watermarkOpacity = 1.0
 
   // preferredTransform is a matrix, not a metadata flag (the iOS gotcha flagged in
   // IOS_PORT_HANDOFF.md §8) — bake it in immediately so every downstream step works in already
@@ -117,17 +122,19 @@ enum FrameCompositor {
     return tint.composited(over: blurred)
   }
 
-  // Mirrors GlRenderer.setWatermark/drawWatermark (HARD RULE 6): top-right corner, width a fixed
-  // fraction of canvas width (aspect preserved), equal pixel margin on both edges, faded opacity.
-  // In real pixel space (unlike Android's GL NDC) the margin needs no aspect correction — an equal
-  // pixel margin is already equal in both axes.
+  // Mirrors GlRenderer.setWatermark/drawWatermark (HARD RULE 6): left side with a larger top
+  // offset than a corner-hugging margin (per operator request: "left side, a little down" rather
+  // than pinned to the very top-left corner), width a fixed fraction of canvas width (aspect
+  // preserved), faded opacity. In real pixel space (unlike Android's GL NDC) these need no aspect
+  // correction — a fraction of canvas width is already the same physical distance in both axes.
   static func watermarked(_ image: CIImage, watermark: CIImage, dstSize: CGSize) -> CIImage {
     let wmSize = watermark.extent.size
     guard wmSize.width > 0, wmSize.height > 0 else { return image }
     let wmWidth = dstSize.width * watermarkWidthFraction
     let wmHeight = wmWidth * (wmSize.height / wmSize.width)
-    let margin = dstSize.width * watermarkMarginFraction
-    let origin = CGPoint(x: dstSize.width - margin - wmWidth, y: dstSize.height - margin - wmHeight)
+    let leftMargin = dstSize.width * watermarkLeftMarginFraction
+    let topOffset = dstSize.width * watermarkTopOffsetFraction
+    let origin = CGPoint(x: leftMargin, y: dstSize.height - topOffset - wmHeight)
 
     let positioned = placed(normalizedOrigin(watermark), in: CGRect(origin: origin, size: CGSize(width: wmWidth, height: wmHeight)))
     let faded = positioned.applyingFilter(

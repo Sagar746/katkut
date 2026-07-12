@@ -197,10 +197,11 @@ class GlRenderer(private val encoderSurface: Surface) {
   }
 
   /**
-   * Upload the watermark image once and precompute its corner placement for a dstW x dstH canvas
+   * Upload the watermark image once and precompute its placement for a dstW x dstH canvas
    * (constant for the whole export, so this runs once — not per frame). Preserves the watermark's
-   * own aspect ratio (scaled to WM_WIDTH_FRACTION of the canvas width), anchored top-right with an
-   * equal pixel margin on both edges.
+   * own aspect ratio (scaled to WM_WIDTH_FRACTION of the canvas width), anchored left with a
+   * larger top offset than a corner-hugging margin (per operator request: "left side, a little
+   * down" rather than pinned to the very top-left corner).
    */
   fun setWatermark(bitmap: Bitmap, dstW: Int, dstH: Int) {
     val tex = IntArray(1)
@@ -217,13 +218,13 @@ class GlRenderer(private val encoderSurface: Surface) {
     val bitmapAspect = bitmap.width.toDouble() / bitmap.height.toDouble()
     val sx = WM_WIDTH_FRACTION
     val sy = sx * dstAspect / bitmapAspect
-    // Same PIXEL margin on both edges: converting a width-relative pixel margin to each axis's
-    // own NDC scale (NDC spans 2 units per full dimension) means the Y margin needs the extra
-    // dstAspect factor, since X and Y don't share a unit scale once width != height.
-    val marginNdcX = 2.0 * WM_MARGIN_FRACTION
-    val marginNdcY = 2.0 * WM_MARGIN_FRACTION * dstAspect
-    val centerX = 1.0 - marginNdcX - sx // GL NDC: +1 is the right edge
-    val centerY = 1.0 - marginNdcY - sy // GL NDC: +1 is the TOP edge (top-right corner)
+    // Converting a width-relative fraction to each axis's own NDC scale (NDC spans 2 units per
+    // full dimension) means the Y value needs the extra dstAspect factor, since X and Y don't
+    // share a unit scale once width != height.
+    val marginNdcX = 2.0 * WM_LEFT_MARGIN_FRACTION
+    val topOffsetNdcY = 2.0 * WM_TOP_OFFSET_FRACTION * dstAspect
+    val centerX = -1.0 + marginNdcX + sx // GL NDC: -1 is the LEFT edge
+    val centerY = 1.0 - topOffsetNdcY - sy // GL NDC: +1 is the TOP edge; larger offset = further down
 
     Matrix.setIdentityM(watermarkPosMatrix, 0)
     Matrix.translateM(watermarkPosMatrix, 0, centerX.toFloat(), centerY.toFloat(), 0f)
@@ -658,9 +659,14 @@ class GlRenderer(private val encoderSurface: Surface) {
 
     // --- watermark additions (HARD RULE 6) ---
 
-    private const val WM_WIDTH_FRACTION = 0.16   // watermark width, as a fraction of canvas width
-    private const val WM_MARGIN_FRACTION = 0.04  // corner margin, as a fraction of canvas width
-    private const val WM_OPACITY = 0.85f
+    private const val WM_WIDTH_FRACTION = 0.16          // watermark width, as a fraction of canvas width
+    private const val WM_LEFT_MARGIN_FRACTION = 0.04    // left margin, as a fraction of canvas width
+    private const val WM_TOP_OFFSET_FRACTION = 0.14     // offset from the top, as a fraction of canvas width
+    // The watermark PNG's own alpha channel now carries the intended translucency (baked in at
+    // asset-generation time, ~50%) — this is a pure pass-through multiplier, not a second opacity
+    // layer, so the asset's alpha is the single source of truth instead of two compounding values
+    // split across this file and the asset.
+    private const val WM_OPACITY = 1.0f
 
     private const val WATERMARK_VERTEX_SHADER = """
       attribute vec4 aPosition;

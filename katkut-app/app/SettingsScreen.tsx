@@ -3,6 +3,8 @@ import { ActivityIndicator, AppState, Alert, Image, Platform, ScrollView, StyleS
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
+import { Directory, Paths } from 'expo-file-system';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import {
@@ -15,14 +17,28 @@ import {
   LogOut,
   Mail,
   Shield,
+  Trash2,
   User,
+  UserX,
 } from 'lucide-react-native';
 import PressableScale from './components/PressableScale';
 import { colors, radius, space, type } from './theme';
-import { getCurrentUser, getEntitlement, signInWithGoogle, signOut, AuthUser } from '../services';
+import {
+  deleteAccount,
+  getCurrentUser,
+  getEntitlement,
+  signInWithApple,
+  signInWithGoogle,
+  signOut,
+  AuthUser,
+} from '../services';
 
 const MARKETING_SITE_URL = 'https://katkut-dekc.vercel.app';
 const MARKETING_UPGRADE_URL = `${MARKETING_SITE_URL}/upgrade`;
+// NOTE: marketing/terms/index.html and marketing/privacy-policy/index.html still list a
+// different contact address (sanjaybhattarai362@gmail.com) — update those too if this one should
+// be the single source of truth.
+const CONTACT_EMAIL = 'khelset.com@gmail.com';
 // Stripe's hosted Customer Portal — lets a Pro member view/cancel their own subscription.
 // Stripe handles identity verification (emailed one-time link) itself; we never touch billing
 // state directly. This is the TEST MODE portal link (Stripe Dashboard > Test mode > Settings >
@@ -97,6 +113,8 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
   const [signingOut, setSigningOut] = useState(false);
   const [openingCheckout, setOpeningCheckout] = useState(false);
   const [openingPortal, setOpeningPortal] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   // Re-checks every time this screen mounts, since App.tsx unmounts/remounts screens rather than
   // keeping them alive.
@@ -139,6 +157,23 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
     }
   }
 
+  // Apple guideline 4.8 — iOS only (Android has no equivalent requirement and the native module
+  // isn't available there). Silently returns without an alert if the user just dismisses the
+  // Apple sheet (see signInWithApple's ERR_REQUEST_CANCELED handling).
+  async function handleSignInWithApple() {
+    setSigningIn(true);
+    try {
+      await signInWithApple();
+      const [u, entitlement] = await Promise.all([getCurrentUser(), getEntitlement()]);
+      setUser(u);
+      setIsPro(entitlement.isPro);
+    } catch (e) {
+      Alert.alert('Sign-in failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSigningIn(false);
+    }
+  }
+
   // Opens the public marketing site — no uid needed since there's no account yet. Deliberately
   // doesn't mention Pro/pricing in-app (App Store/Play Store review flags native "subscribe here"
   // CTAs with pricing for external web purchases — HARD RULE 5).
@@ -155,6 +190,46 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
     } finally {
       setSigningOut(false);
     }
+  }
+
+  // Two-step confirmation (irreversible — matches how most apps gate account deletion). The
+  // actual deletion happens server-side in marketing/api/delete-account.js, which verifies the
+  // caller's own access token rather than trusting a client-supplied id.
+  function handleDeleteAccount() {
+    Alert.alert(
+      'Delete Account',
+      isPro
+        ? 'This permanently deletes your account and cancels your Pro subscription. This cannot be undone.'
+        : 'This permanently deletes your account and all associated data. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert('Are you absolutely sure?', 'Your account cannot be recovered once deleted.', [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  setDeletingAccount(true);
+                  try {
+                    await deleteAccount();
+                    setUser(null);
+                    setIsPro(false);
+                  } catch (e) {
+                    Alert.alert('Delete failed', e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setDeletingAccount(false);
+                  }
+                },
+              },
+            ]);
+          },
+        },
+      ]
+    );
   }
 
   // App Review compliance: this must open the device's actual default browser (fully backgrounds
@@ -180,6 +255,60 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
     }
   }
 
+  // Removes everything under the OS cache directory — proxies, rendered photo clips, and
+  // in-progress export temp files (all write to Paths.cache — see proxies.ts/photoClips.ts/
+  // exportReel.ts). Saved drafts/projects live under Paths.document ('katkut-projects/'), a
+  // separate root, so this can never touch them.
+  function handleClearCache() {
+    Alert.alert(
+      'Clear Cache',
+      'This removes temporary preview and export files. Your saved projects and drafts are not affected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Cache',
+          style: 'destructive',
+          onPress: async () => {
+            setClearingCache(true);
+            let removedCount = 0;
+            let failedCount = 0;
+            let freedBytes = 0;
+            try {
+              const cacheDir = new Directory(Paths.cache);
+              if (cacheDir.exists) {
+                for (const entry of cacheDir.list()) {
+                  try {
+                    freedBytes += entry.size ?? 0;
+                    entry.delete();
+                    removedCount++;
+                  } catch {
+                    // best-effort — e.g. a file mid-write from an in-progress export; skip it
+                    // rather than aborting the whole clear
+                    failedCount++;
+                  }
+                }
+              }
+            } finally {
+              setClearingCache(false);
+            }
+
+            // Concrete before/after proof it actually did something — a silent success here was
+            // indistinguishable from a silent failure, which is exactly what made this hard to
+            // trust from the UI alone.
+            if (removedCount === 0 && failedCount === 0) {
+              Alert.alert('Cache Cleared', 'There was nothing to clear — cache was already empty.');
+            } else {
+              const mb = freedBytes / (1024 * 1024);
+              const sizeLabel = mb >= 0.1 ? ` (${mb.toFixed(1)} MB)` : '';
+              const failedLabel = failedCount > 0 ? ` ${failedCount} item(s) could not be removed.` : '';
+              Alert.alert('Cache Cleared', `Removed ${removedCount} file(s)${sizeLabel}.${failedLabel}`);
+            }
+          },
+        },
+      ]
+    );
+  }
+
   const aboutRows: RowItemProps[] = [
     {
       icon: <Shield size={16} color={colors.text.secondary} strokeWidth={2} />,
@@ -192,9 +321,20 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
       onPress: () => Linking.openURL(`${MARKETING_SITE_URL}/terms`),
     },
     {
+      icon: <Mail size={16} color={colors.text.secondary} strokeWidth={2} />,
+      label: 'Contact Us',
+      onPress: () => Linking.openURL(`mailto:${CONTACT_EMAIL}`),
+    },
+    {
       icon: <Info size={16} color={colors.text.secondary} strokeWidth={2} />,
       label: 'App Version',
       value: VERSION_LABEL,
+    },
+    {
+      icon: <Trash2 size={16} color={colors.text.secondary} strokeWidth={2} />,
+      label: 'Clear Cache',
+      onPress: handleClearCache,
+      loading: clearingCache,
     },
     ...(user
       ? [
@@ -204,6 +344,13 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
             onPress: handleSignOut,
             destructive: true,
             loading: signingOut,
+          },
+          {
+            icon: <UserX size={16} color={colors.error} strokeWidth={2} />,
+            label: 'Delete Account',
+            onPress: handleDeleteAccount,
+            destructive: true,
+            loading: deletingAccount,
           },
         ]
       : []),
@@ -318,6 +465,16 @@ export default function SettingsScreen({ onBack }: SettingsScreenProps) {
                   </View>
                 )}
               </PressableScale>
+
+              {Platform.OS === 'ios' && (
+                <AppleAuthentication.AppleAuthenticationButton
+                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                  cornerRadius={radius.md}
+                  style={styles.appleButton}
+                  onPress={handleSignInWithApple}
+                />
+              )}
 
               <PressableScale style={styles.webAccountLink} onPress={handleWebAccount}>
                 <Text style={styles.webAccountLinkText}>Go to Web Account</Text>
@@ -556,6 +713,11 @@ const styles = StyleSheet.create({
   googleButtonText: {
     ...type.button,
     color: '#FFFFFF',
+  },
+  appleButton: {
+    width: '100%',
+    height: 44,
+    marginBottom: space.xs,
   },
   webAccountLink: {
     flexDirection: 'row',
