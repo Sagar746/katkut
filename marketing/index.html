@@ -5,41 +5,114 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Katkut AI — Turn your clips into a reel in seconds</title>
 <meta name="description" content="Drop in your clips, Katkut AI picks the best moments and cuts a ready-to-post 9:16 reel — entirely on your phone, nothing uploaded.">
+<meta property="og:title" content="Katkut AI — Turn your clips into a reel in seconds">
+<meta property="og:description" content="Drop in your clips, Katkut AI picks the best moments and cuts a ready-to-post 9:16 reel — entirely on your phone, nothing uploaded.">
+<meta property="og:image" content="https://katkut-dekc.vercel.app/assets/og.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="/styles.css">
 <style>
+  /* The landing page is always dark to match the app + promo graphics
+     (other pages keep the auto light/dark scheme from styles.css). */
+  body {
+    background:
+      radial-gradient(900px 480px at 15% -5%, rgba(155,81,224,0.22), transparent 70%),
+      radial-gradient(800px 420px at 90% 10%, rgba(0,198,255,0.10), transparent 70%),
+      #0c0914;
+    color: #f0eef8;
+  }
+  a { color: #b18cff; }
+  .card { background: rgba(255,255,255,0.035); border-color: rgba(255,255,255,0.08); }
+  .btn-secondary { border-color: rgba(255,255,255,0.18); }
+  footer.site-footer { border-top-color: rgba(255,255,255,0.08); color: #a3a0b0; }
+
   .hero {
-    padding: 56px 0 64px;
+    padding: 64px 0 40px;
     text-align: center;
   }
-  .hero .brand-mark { width: 64px; height: 64px; border-radius: 18px; margin: 0 auto 24px; }
+  .hero .brand-mark { width: 72px; height: 72px; border-radius: 20px; margin: 0 auto 28px;
+    box-shadow: 0 12px 48px rgba(155,81,224,0.35); }
   .hero h1 {
-    font-size: 42px;
+    font-size: 46px;
     font-weight: 800;
-    letter-spacing: -1px;
+    letter-spacing: -1.2px;
     margin: 0 0 16px;
-    line-height: 1.1;
+    line-height: 1.08;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(100deg, #b18cff, #00c6ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
   .hero p.sub {
     font-size: 18px;
-    color: #6b6880;
-    max-width: 520px;
-    margin: 0 auto 32px;
+    color: #a3a0b0;
+    max-width: 540px;
+    margin: 0 auto 30px;
   }
-  @media (prefers-color-scheme: dark) { .hero p.sub { color: #a3a0b0; } }
   .hero-ctas { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .hero-trust {
+    margin: 22px 0 0;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #8c88a0;
+    letter-spacing: 0.1px;
+  }
+  @media (max-width: 560px) {
+    .hero { padding-top: 40px; }
+    .hero h1 { font-size: 34px; }
+  }
 
+  /* ---- Screenshot showcase: the six promo cards, swipeable ---- */
+  .shots-section { padding: 40px 0 8px; }
+  .section-title { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; margin: 0 0 8px; text-align: center; }
+  .section-sub { text-align: center; color: #a3a0b0; margin: 0 0 28px; }
+  .shots {
+    display: flex;
+    gap: 18px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    /* bleed to the screen edges so cards peek on both sides */
+    margin: 0 -24px;
+    padding: 6px 24px 18px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.18) transparent;
+  }
+  .shots::-webkit-scrollbar { height: 6px; }
+  .shots::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+  .shots::-webkit-scrollbar-track { background: transparent; }
+  .shot {
+    flex: 0 0 auto;
+    width: min(78vw, 350px);
+    scroll-snap-align: center;
+    border-radius: 22px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    background: #14101f;
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shots-hint {
+    text-align: center;
+    font-size: 13px;
+    color: #8c88a0;
+    margin: 4px 0 0;
+  }
+
+  /* ---- Feature cards ---- */
   .features {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
-    margin: 24px 0 8px;
+    margin: 48px 0 8px;
   }
   .feature { padding: 24px; }
   .feature .icon {
     width: 40px;
     height: 40px;
     border-radius: 12px;
-    background: linear-gradient(135deg, rgba(155,81,224,0.18), rgba(0,198,255,0.18));
+    background: linear-gradient(135deg, rgba(155,81,224,0.25), rgba(0,198,255,0.25));
     display: flex;
     align-items: center;
     justify-content: center;
@@ -47,23 +120,18 @@
     margin-bottom: 14px;
   }
   .feature h3 { font-size: 16px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.2px; }
-  .feature p { font-size: 14.5px; color: #6b6880; margin: 0; }
-  @media (prefers-color-scheme: dark) { .feature p { color: #a3a0b0; } }
-
-  .section-title { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin: 0 0 8px; text-align: center; }
-  .section-sub { text-align: center; color: #6b6880; margin: 0 0 32px; }
-  @media (prefers-color-scheme: dark) { .section-sub { color: #a3a0b0; } }
+  .feature p { font-size: 14.5px; color: #a3a0b0; margin: 0; }
 
   .mid-cta {
     text-align: center;
     padding: 56px 24px;
     margin: 64px 0 0;
     border-radius: 24px;
-    background: linear-gradient(135deg, rgba(155,81,224,0.10), rgba(0,198,255,0.08));
+    border: 1px solid rgba(255,255,255,0.07);
+    background: linear-gradient(135deg, rgba(155,81,224,0.14), rgba(0,198,255,0.10));
   }
   .mid-cta h2 { font-size: 26px; font-weight: 800; margin: 0 0 10px; letter-spacing: -0.5px; }
-  .mid-cta p { color: #6b6880; margin: 0 0 24px; }
-  @media (prefers-color-scheme: dark) { .mid-cta p { color: #a3a0b0; } }
+  .mid-cta p { color: #a3a0b0; margin: 0 0 24px; }
 </style>
 </head>
 <body>
@@ -75,20 +143,36 @@
       </a>
       <div class="nav-links">
         <a href="/about">About</a>
+        <a href="/about#faq">FAQ</a>
         <a href="/pricing">Pricing</a>
         <a href="/privacy-policy">Privacy</a>
       </div>
     </nav>
 
     <section class="hero">
-      <div class="brand-mark"></div>
-      <h1>Turn your clips into a reel<br>in seconds.</h1>
+      <img src="/assets/logo.png" alt="" class="brand-mark">
+      <h1>Turn your clips into a reel<br><span class="grad">in seconds.</span></h1>
       <p class="sub">Drop in the short clips you shot today. Katkut AI picks the best moments, trims,
       sequences, and hands you a ready-to-post 9:16 reel — right on your phone.</p>
       <div class="hero-ctas">
         <a class="btn" href="/pricing">See Pro pricing</a>
-        <a class="btn-secondary" href="/about">How it works</a>
+        <a class="btn-secondary" href="#how-it-works">See how it works</a>
       </div>
+      <p class="hero-trust">100% on-device &nbsp;·&nbsp; Nothing ever uploaded &nbsp;·&nbsp; Free to start</p>
+    </section>
+
+    <section class="shots-section" id="how-it-works">
+      <h2 class="section-title">From camera roll to posted — in six screens</h2>
+      <p class="section-sub">This is the whole app. No timeline scrubbing, no learning curve.</p>
+      <div class="shots">
+        <div class="shot"><img src="/assets/screens/shot-1-home.webp" alt="Katkut AI home screen — your clips in, one reel out" width="760" height="1651"></div>
+        <div class="shot"><img src="/assets/screens/shot-2-style.webp" alt="Pick a vibe for your footage — travel, food, vlog styles" width="760" height="1651" loading="lazy"></div>
+        <div class="shot"><img src="/assets/screens/shot-3-options.webp" alt="Set target length and audio in a tap" width="760" height="1651" loading="lazy"></div>
+        <div class="shot"><img src="/assets/screens/shot-4-processing.webp" alt="AI analyzes your clips and finds the best moments" width="760" height="1651" loading="lazy"></div>
+        <div class="shot"><img src="/assets/screens/shot-5-export.webp" alt="Export in crisp 1080p mastering quality" width="760" height="1651" loading="lazy"></div>
+        <div class="shot"><img src="/assets/screens/shot-6-share.webp" alt="Share in seconds — saved to gallery and straight to socials" width="760" height="1651" loading="lazy"></div>
+      </div>
+      <p class="shots-hint">Swipe or scroll →</p>
     </section>
 
     <section class="features">
