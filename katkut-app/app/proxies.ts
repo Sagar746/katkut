@@ -49,8 +49,13 @@ export async function generateProxies(
             const { outputPath } = await VideoAssembler.makeProxy(src, out.uri);
             proxy = outputPath;
             proxyBySource.set(src, proxy);
-          } catch {
-            proxy = undefined; // fall back to original for this clip
+          } catch (e) {
+            // Falls back to the original for this clip, but this was previously silent — no way
+            // to tell "proxy failed" from "never had one" apart. A failed proxy means this clip
+            // loses its blurred-fill treatment (baked in only by the proxy pipeline) in preview,
+            // which reads as the wrong orientation-handling bug rather than a failed transcode.
+            console.warn(`[proxies] makeProxy failed for ${clipId} (${src}):`, e);
+            proxy = undefined;
           }
         }
         if (proxy) result.set(clipId, proxy);
