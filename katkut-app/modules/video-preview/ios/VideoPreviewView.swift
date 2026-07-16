@@ -149,15 +149,18 @@ public final class VideoPreviewView: ExpoView {
       return
     }
 
-    let audioParams = AVMutableAudioMixInputParameters(track: compAudioTrack)
-
     var cursor = CMTime.zero
     var durations: [Double] = []
     var instructions: [AVMutableVideoCompositionInstruction] = []
-    // Proxies are rendered to one uniform size (see ProxyTranscoder), so the first segment's
-    // display size is representative of the whole timeline in the normal case.
-    var renderSize = CGSize(width: 720, height: 1280)
-    var haveRenderSize = false
+    // BUG FIX: this used to start as this fallback value but then get overwritten by the FIRST
+    // segment's own displaySize on its first iteration (`if !haveRenderSize { renderSize =
+    // displaySize }`) — so if that first segment happened to be a raw landscape/square fallback
+    // source (reopened draft, proxies not persisted, see OVERVIEW.md B5), the ENTIRE canvas
+    // became landscape-shaped, corrupting the scale/position of every OTHER segment in the same
+    // timeline too, including normal vertical proxies. Fixed to ProxyTranscoder's actual output
+    // size (see ProxyTranscoder.swift outW/outH) so every segment always scales against the same
+    // stable, known-vertical canvas regardless of what the first clip happens to be.
+    let renderSize = CGSize(width: 720, height: 1280)
 
     for seg in items {
       guard let url = URL(string: seg.uri) else { continue }
@@ -174,14 +177,10 @@ public final class VideoPreviewView: ExpoView {
         continue
       }
 
-      // preferredTransform-oriented display rect for THIS segment, needed before renderSize can
-      // be established (for the first segment) or scaled against it (every segment after).
+      // preferredTransform-oriented display rect for THIS segment, used to scale it against the
+      // fixed renderSize above.
       let displayRect = CGRect(origin: .zero, size: sourceVideoTrack.naturalSize).applying(sourceVideoTrack.preferredTransform)
       let displaySize = CGSize(width: abs(displayRect.width), height: abs(displayRect.height))
-      if !haveRenderSize {
-        renderSize = displaySize
-        haveRenderSize = true
-      }
 
       let instruction = AVMutableVideoCompositionInstruction()
       instruction.timeRange = CMTimeRange(start: cursor, duration: range.duration)
@@ -195,8 +194,8 @@ public final class VideoPreviewView: ExpoView {
       // per HARD RULE 2) happen to already match renderSize, so this was invisible in normal use.
       // But when a saved draft is reopened, proxies aren't persisted (OVERVIEW.md B5) and playback
       // falls back to full-resolution originals of whatever size/orientation the source camera
-      // shot — without a scale factor, a segment whose native size differs from the first
-      // segment's renderSize renders at raw 1:1 pixel scale instead of filling the frame.
+      // shot — without a scale factor, a segment whose native size differs from the fixed
+      // renderSize renders at raw 1:1 pixel scale instead of filling the frame.
       //
       // Cover-fit vs contain-fit must match the SAME srcAspect > dstAspect decision
       // ProxyTranscoder/FrameCompositor use for HARD RULE 2: a vertical source should cover-fit
@@ -224,12 +223,18 @@ public final class VideoPreviewView: ExpoView {
       instruction.layerInstructions = [layerInstruction]
       instructions.append(instruction)
 
-      if let sourceAudioTrack = asset.tracks(withMediaType: .audio).first {
+      // BUG FIX: this used to always insert the segment's audio and rely on
+      // AVMutableAudioMixInputParameters.setVolume(at:) keyframes (set exactly at each segment's
+      // cursor boundary — the same instant as its insertTimeRange edit point) to mute it. In
+      // practice this was unreliable: muted clips kept playing audio in the editor/Preview even
+      // though the mute icon correctly showed muted, while export (a separate PCM-based muting
+      // path, see PCMAudioBuilder.swift) was unaffected and always correct. Skipping the audio
+      // insertion entirely for a muted segment leaves that time range as a genuine gap in the
+      // composition's audio track, which AVFoundation plays back as unconditional silence — no
+      // volume keyframe timing to get wrong.
+      if !seg.muted, let sourceAudioTrack = asset.tracks(withMediaType: .audio).first {
         try? compAudioTrack.insertTimeRange(range, of: sourceAudioTrack, at: cursor)
       }
-      // Per-segment mute on the one shared composition audio track — holds until the next
-      // setVolume call, i.e. for exactly this segment's slice.
-      audioParams.setVolume(seg.muted ? 0 : 1, at: cursor)
 
       durations.append(range.duration.seconds)
       cursor = CMTimeAdd(cursor, range.duration)
@@ -241,9 +246,6 @@ public final class VideoPreviewView: ExpoView {
       return
     }
 
-    let audioMix = AVMutableAudioMix()
-    audioMix.inputParameters = [audioParams]
-
     let videoComposition = AVMutableVideoComposition()
     videoComposition.instructions = instructions
     videoComposition.renderSize = renderSize
@@ -251,7 +253,6 @@ public final class VideoPreviewView: ExpoView {
 
     let playerItem = AVPlayerItem(asset: composition)
     playerItem.videoComposition = videoComposition
-    playerItem.audioMix = audioMix
 
     statusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
       guard item.status == .readyToPlay else { return }
