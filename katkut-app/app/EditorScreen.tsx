@@ -38,8 +38,13 @@ import {
 export interface EditorScreenProps {
   analyses: AnalysisClip[];
   initialEdl: Edl;
-  onBack: (currentEdl: Edl) => void;
-  onExport: (currentEdl: Edl) => void;
+  // BUG FIX: clips added mid-edit (handleAddMedia) only lived in this screen's local
+  // extraAnalyses state — App.tsx's own `analyses` (which ExportScreen/exportReel.ts use to
+  // resolve each clipId to a source URI) never learned about them, so exporting after adding a
+  // clip threw "No source URI for add_...". Both callbacks now also hand back the merged
+  // analyses (allAnalyses) so the caller can fold them into its own state.
+  onBack: (currentEdl: Edl, analyses: AnalysisClip[]) => void;
+  onExport: (currentEdl: Edl, analyses: AnalysisClip[]) => void;
   proxyByClipId?: Map<string, string>;
 }
 
@@ -241,11 +246,11 @@ export default function EditorScreen({ analyses, initialEdl, onBack, onExport, p
     <View style={styles.root}>
       {/* Top Professional Header Navigation */}
       <View style={[styles.topBar, { paddingTop: insets.top + space.sm }]}>
-        <Pressable hitSlop={12} onPress={() => onBack(edl)} style={styles.closeButton}>
+        <Pressable hitSlop={12} onPress={() => onBack(edl, allAnalyses)} style={styles.closeButton}>
           <X size={20} color="#FFFFFF" />
         </Pressable>
         <Text style={styles.workspaceTitle}>Studio Editor</Text>
-        <Pressable style={styles.exportBtn} onPress={() => onExport(edl)}>
+        <Pressable style={styles.exportBtn} onPress={() => onExport(edl, allAnalyses)}>
           <Download size={14} color="#0F0F11" strokeWidth={2.5} />
           <Text style={styles.exportText}>Export</Text>
         </Pressable>

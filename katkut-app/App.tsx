@@ -189,12 +189,14 @@ export default function App() {
           analyses={analyses}
           initialEdl={edl}
           proxyByClipId={proxies}
-          onBack={(e) => {
+          onBack={(e, a) => {
             setEdl(e);
+            setAnalyses(a);
             setScreen('result');
           }}
-          onExport={(e) => {
+          onExport={(e, a) => {
             setEdl(e);
+            setAnalyses(a);
             setScreen('export');
           }}
         />

@@ -48,6 +48,17 @@ public final class VideoPreviewView: ExpoView {
 
   public required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
+
+    // BUG FIX: without an explicit category, AVPlayer's audio runs under the implicit default
+    // (.soloAmbient), which iOS silences whenever the hardware ring/silent switch is set to
+    // silent. That made preview/editor playback appear to have "no audio" while export (which
+    // encodes samples to a file rather than routing them through the audio session) was
+    // unaffected — exactly the reported split. .playback ignores the silent switch, matching how
+    // a video editor's preview is expected to behave, and matches Android (which has no
+    // equivalent silent-switch muting).
+    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+    try? AVAudioSession.sharedInstance().setActive(true)
+
     playerLayerView.playerLayer.player = player
     playerLayerView.playerLayer.videoGravity = .resizeAspect
     addSubview(playerLayerView)
@@ -180,16 +191,25 @@ public final class VideoPreviewView: ExpoView {
       //
       // BUG FIX: preferredTransform alone only rotates a segment into its oriented space — it
       // never scales. Uniform proxies (the common case: ProxyTranscoder renders every clip to
-      // 720x1280) happen to already match renderSize, so this was invisible in normal use. But
-      // when a saved draft is reopened, proxies aren't persisted (OVERVIEW.md B5) and playback
-      // falls back to full-resolution originals of whatever size the source camera shot — without
-      // a scale factor, a segment whose native size differs from the first segment's renderSize
-      // renders at raw 1:1 pixel scale instead of filling the frame, showing only a cropped corner
-      // (or, for a smaller source, a tiny image in the middle of the canvas). Cover-fit scale +
-      // center makes every segment fill renderSize regardless of its native resolution — a no-op
-      // (scale 1.0, zero translation) for the uniform-proxy case, since renderSize IS the first
-      // segment's own displaySize.
-      let scale = max(renderSize.width / displaySize.width, renderSize.height / displaySize.height)
+      // 720x1280, with blurred-fill already baked into the pixels for landscape/square sources
+      // per HARD RULE 2) happen to already match renderSize, so this was invisible in normal use.
+      // But when a saved draft is reopened, proxies aren't persisted (OVERVIEW.md B5) and playback
+      // falls back to full-resolution originals of whatever size/orientation the source camera
+      // shot — without a scale factor, a segment whose native size differs from the first
+      // segment's renderSize renders at raw 1:1 pixel scale instead of filling the frame.
+      //
+      // Cover-fit vs contain-fit must match the SAME srcAspect > dstAspect decision
+      // ProxyTranscoder/FrameCompositor use for HARD RULE 2: a vertical source should cover-fit
+      // (fill edge to edge), but a landscape/square source must contain-fit (show the full frame,
+      // never cropped) — unconditional cover-fit was cropping landscape originals tight enough to
+      // read as "zoomed in". This still bakes blur into the empty space only via the proxy path;
+      // this raw-source fallback letterboxes (black bars) instead — a real fix for the "zoomed in"
+      // complaint, short of a full custom AVVideoCompositing blur pass for this fallback case.
+      let srcAspect = displaySize.width / displaySize.height
+      let dstAspect = renderSize.width / renderSize.height
+      let scale = srcAspect > dstAspect
+        ? min(renderSize.width / displaySize.width, renderSize.height / displaySize.height)
+        : max(renderSize.width / displaySize.width, renderSize.height / displaySize.height)
       let scaledSize = CGSize(width: displaySize.width * scale, height: displaySize.height * scale)
       let tx = (renderSize.width - scaledSize.width) / 2
       let ty = (renderSize.height - scaledSize.height) / 2

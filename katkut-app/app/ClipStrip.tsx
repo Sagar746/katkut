@@ -12,7 +12,7 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
-import { Plus, Trash2, VolumeX, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Plus, Trash2, VolumeX, Volume2, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Edl, TimelineItem } from '../core';
 import { thumbKey } from './useClipThumbnails';
@@ -324,11 +324,16 @@ const ClipItem = React.memo(function ClipItem({
 
             {/* Mute/delete controls */}
             <View style={styles.topRow}>
-              {item.muted && (
-                <Pressable hitSlop={6} onPress={() => onToggleMute(index)} style={styles.topBadge}>
+              {/* BUG FIX: this used to only render when item.muted was true, so unmuting a clip
+                  made the badge vanish entirely — no icon update, and no way to tap it again to
+                  re-mute. Always render it, swapping icon/color for the current state instead. */}
+              <Pressable hitSlop={6} onPress={() => onToggleMute(index)} style={styles.topBadge}>
+                {item.muted ? (
                   <VolumeX size={10} color="#FF9F0A" strokeWidth={2.5} />
-                </Pressable>
-              )}
+                ) : (
+                  <Volume2 size={10} color="#E5E5EA" strokeWidth={2.5} />
+                )}
+              </Pressable>
               {isSelected && handlesEnabled && (
                 <Pressable
                   hitSlop={6}
